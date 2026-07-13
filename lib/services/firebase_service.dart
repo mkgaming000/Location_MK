@@ -176,7 +176,11 @@ class FirebaseService {
   /// - Checks auth state
   /// - Prevents self-pairing
   /// - Prevents duplicate pairing
-  /// - Attempts to resolve the device name
+  ///
+  /// Note: We do NOT read live_locations first — pairing is independent of
+  /// whether the device has shared its location. The name is either
+  /// user-supplied or a default. Once the device starts sharing, the
+  /// receiver screen will display the actual name from live_locations.
   ///
   /// Throws specific exceptions with meaningful messages.
   Future<Device> addPairedDevice({
@@ -200,28 +204,10 @@ class FirebaseService {
 
     final now = DateTime.now().millisecondsSinceEpoch;
 
-    // Try to fetch the actual name from live_locations.
-    // This read may fail if the device hasn't shared yet — that's OK.
-    String resolvedName = theirDeviceName;
-    String resolvedOwnerUid = '';
-    try {
-      final snapshot = await _db
-          .ref('${AppConstants.liveLocationsPath}/$theirDeviceId')
-          .get();
-      if (snapshot.exists && snapshot.value is Map) {
-        final map = snapshot.value as Map;
-        resolvedName = (map['name'] as String?) ?? theirDeviceName;
-        resolvedOwnerUid = (map['owner_uid'] as String?) ?? '';
-      }
-    } catch (e) {
-      // Read denied or device hasn't shared yet — use user-supplied name.
-      AppLogger.info('Pair lookup: device has not shared yet (expected).');
-    }
-
     final device = Device(
       id: theirDeviceId,
-      name: resolvedName,
-      ownerUid: resolvedOwnerUid,
+      name: theirDeviceName,
+      ownerUid: '',
       addedAt: DateTime.fromMillisecondsSinceEpoch(now),
     );
 
@@ -229,8 +215,8 @@ class FirebaseService {
       await _db
           .ref('${AppConstants.pairingsPath}/$myDeviceId/$theirDeviceId')
           .set({
-        'name': resolvedName,
-        'owner_uid': resolvedOwnerUid,
+        'name': theirDeviceName,
+        'owner_uid': '',
         'added_at': now,
       });
       AppLogger.firebase('addPairedDevice');

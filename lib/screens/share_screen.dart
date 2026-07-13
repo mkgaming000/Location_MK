@@ -143,7 +143,18 @@ class _ShareScreenState extends State<ShareScreen>
         return;
       }
 
-      // 5. Start the foreground service
+      // 5. Verify foreground service can start (Android 14+ check)
+      final canStart = await AppPermissions.canStartForegroundService();
+      if (!canStart) {
+        _showMessage(
+          'Cannot start foreground service. Ensure location and background '
+          'location permissions are granted in Settings.',
+          openSettings: true,
+        );
+        return;
+      }
+
+      // 6. Start the foreground service
       await _background.startSharing(
         deviceId: _identity.deviceId!,
         deviceName: _identity.deviceName!,

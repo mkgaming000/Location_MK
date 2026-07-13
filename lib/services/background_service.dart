@@ -16,15 +16,16 @@ import 'location_service.dart';
 /// sharing alive when the app is minimized, the screen is locked, or the
 /// screen is off.
 ///
+/// Android version compatibility:
+/// - Android 9–10: standard foreground service with location type
+/// - Android 11–12: requires ACCESS_BACKGROUND_LOCATION for background access
+/// - Android 13: requires POST_NOTIFICATIONS for the foreground notification
+/// - Android 14+: requires FOREGROUND_SERVICE_LOCATION permission (manifest)
+///   AND the service must be started with foregroundServiceType=location
+///
 /// The foreground service shows a persistent notification:
 ///   Title: "Live Location Sharing Active"
 ///   Body:  "Your live location is being shared with paired devices."
-///
-/// Architecture note: the foreground service runs in a separate Dart
-/// isolate. Firebase Auth state does NOT transfer across isolates. The
-/// isolate signs in anonymously and gets its own UID. The DB rules allow
-/// ANY authenticated user to write to live_locations (first writer owns
-/// the node), so the isolate's writes succeed.
 class BackgroundService {
   BackgroundService._();
   static final BackgroundService instance = BackgroundService._();
@@ -81,6 +82,8 @@ class BackgroundService {
   // Public control API
   // ---------------------------------------------------------------------------
 
+  /// Starts sharing location. The foreground service keeps running even when
+  /// the app is minimized, the screen is locked, or the screen is off.
   Future<void> startSharing({
     required String deviceId,
     required String deviceName,
@@ -88,28 +91,45 @@ class BackgroundService {
     if (!_configured) {
       await initialize();
     }
-    if (!await _service.isRunning()) {
-      await _service.startService();
+    try {
+      if (!await _service.isRunning()) {
+        await _service.startService();
+        // Give the service a moment to initialize before invoking.
+        await Future.delayed(const Duration(milliseconds: 500));
+      }
+      _service.invoke('start-sharing', {
+        'device_id': deviceId,
+        'device_name': deviceName,
+      });
+      AppLogger.background('startSharing invoked for device: $deviceId');
+    } catch (e, st) {
+      AppLogger.error('startSharing failed', e, st);
+      rethrow;
     }
-    _service.invoke('start-sharing', {
-      'device_id': deviceId,
-      'device_name': deviceName,
-    });
-    AppLogger.background('startSharing invoked for device: $deviceId');
   }
 
   Future<void> stopSharing({required String deviceId}) async {
-    _service.invoke('stop-sharing', {'device_id': deviceId});
-    await Future.delayed(const Duration(milliseconds: 500));
-    if (await _service.isRunning()) {
-      _service.invoke('stop-service');
+    try {
+      _service.invoke('stop-sharing', {'device_id': deviceId});
+      await Future.delayed(const Duration(milliseconds: 500));
+      if (await _service.isRunning()) {
+        _service.invoke('stop-service');
+      }
+      AppLogger.background('stopSharing invoked for device: $deviceId');
+    } catch (e, st) {
+      AppLogger.error('stopSharing failed', e, st);
+      rethrow;
     }
-    AppLogger.background('stopSharing invoked for device: $deviceId');
   }
 
   Future<bool> isSharing() async {
     if (!_configured) return false;
-    return _service.isRunning();
+    try {
+      return _service.isRunning();
+    } catch (e) {
+      AppLogger.error('isSharing check failed', e);
+      return false;
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -119,18 +139,22 @@ class BackgroundService {
   @pragma('vm:entry-point')
   static Future<void> onStart(ServiceInstance service) async {
     DartPluginRegistrant.ensureInitialized();
+
+    // Initialize Firebase in this isolate.
     try {
       await Firebase.initializeApp();
+      AppLogger.background('Firebase initialized in isolate');
     } catch (e) {
-      // Firebase may already be initialized in this isolate.
       AppLogger.background('Firebase already initialized: $e');
     }
 
+    // Listen for stop-service event.
     service.on('stop-service').listen((event) {
       AppLogger.background('stop-service received');
       service.stopSelf();
     });
 
+    // Active state held by this isolate.
     String? activeDeviceId;
     String? activeDeviceName;
     StreamSubscription<LocationUpdate>? locationSub;
@@ -142,7 +166,8 @@ class BackgroundService {
     final FirebaseService firebase = FirebaseService.instance;
     final AuthService auth = AuthService.instance;
 
-    // Authenticate in this isolate.
+    // Authenticate in this isolate (auth state doesn't transfer across
+    // isolates — we re-sign-in anonymously here).
     try {
       await auth.initialize();
       AppLogger.background('Auth initialized in isolate, uid: ${auth.uid}');
@@ -150,6 +175,9 @@ class BackgroundService {
       AppLogger.error('BackgroundService auth init failed', e, st);
     }
 
+    // Register this isolate's UID → device_id mapping so DB rules can
+    // identify it. This is needed because the background isolate has a
+    // different anonymous UID than the main isolate.
     service.on('start-sharing').listen((event) async {
       if (event == null) return;
       final newId = event['device_id'] as String?;
@@ -175,6 +203,17 @@ class BackgroundService {
       isSharing = true;
 
       AppLogger.background('Starting sharing for: $activeDeviceId');
+
+      // Register this device before publishing (needed for DB rules).
+      try {
+        await firebase.registerSelfDevice(
+          deviceId: activeDeviceId!,
+          deviceName: activeDeviceName!,
+        );
+      } catch (e, st) {
+        AppLogger.error('registerSelfDevice failed', e, st);
+        // Continue anyway — the write to live_locations may still succeed.
+      }
 
       await _beginSharing(
         deviceId: activeDeviceId!,
@@ -240,7 +279,8 @@ class BackgroundService {
         location: initial,
         online: true,
       );
-      AppLogger.background('Initial location published: ${initial.latitude}, ${initial.longitude}');
+      AppLogger.background(
+          'Initial location published: ${initial.latitude}, ${initial.longitude}');
     }
 
     // Subscribe to location updates — every new position is published.

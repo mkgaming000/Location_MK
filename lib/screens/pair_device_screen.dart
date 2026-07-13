@@ -12,6 +12,17 @@ import '../utils/logger.dart';
 /// Pair Device screen — lets the user pair another phone either by:
 ///   - Showing their QR code / Device ID for the other phone to scan
 ///   - Entering / scanning the other phone's Device ID
+///
+/// Pairing flow:
+/// 1. Validate Device ID format (8-64 chars)
+/// 2. Prevent self-pairing
+/// 3. Check authentication
+/// 4. Check for duplicate pairing
+/// 5. Write pairing entry to Firebase
+///
+/// Note: The device doesn't need to be "online" or have shared location
+/// to be paired. Pairing just creates a record in `pairings/{myId}/{theirId}`.
+/// Once they start sharing, you'll see their location.
 class PairDeviceScreen extends StatefulWidget {
   const PairDeviceScreen({super.key});
 
@@ -308,7 +319,7 @@ class _PairDeviceScreenState extends State<PairDeviceScreen>
       return;
     }
 
-    // 2. Validate Device ID format (UUID v4 or similar, 8-64 chars)
+    // 2. Validate Device ID format (8-64 chars)
     if (id.length < 8 || id.length > 64) {
       _showMessage(
         'Invalid device ID. It should be 8-64 characters. '
@@ -348,7 +359,7 @@ class _PairDeviceScreenState extends State<PairDeviceScreen>
     setState(() => _isPairing = true);
 
     try {
-      // 5. Check for duplicate pairing
+      // 5. Check for duplicate pairing FIRST (before Firebase write)
       final alreadyPaired =
           await FirebaseService.instance.isAlreadyPaired(myId, id);
       if (alreadyPaired) {
@@ -359,7 +370,10 @@ class _PairDeviceScreenState extends State<PairDeviceScreen>
         return;
       }
 
-      // 6. Attempt to pair
+      // 6. Attempt to pair — write to pairings/{myId}/{theirId}
+      // The name is either user-supplied or a default.
+      // We do NOT need to read live_locations first — pairing is independent
+      // of whether the device has shared its location.
       final name = _deviceNameCtrl.text.trim().isEmpty
           ? 'Paired Device'
           : _deviceNameCtrl.text.trim();
@@ -378,16 +392,19 @@ class _PairDeviceScreenState extends State<PairDeviceScreen>
       _deviceIdCtrl.clear();
       _deviceNameCtrl.clear();
     } on StateError catch (e) {
-      // Specific state errors from FirebaseService
       final msg = e.message;
       if (msg.contains('Already paired')) {
-        _showMessage('Already paired. This device is in your paired list.',
-            isError: true);
+        _showMessage(
+          'Already paired. This device is in your paired list.',
+          isError: true,
+        );
       } else if (msg.contains('Authentication')) {
         _showMessage('Authentication failed. Restart the app.', isError: true);
       } else {
         _showMessage(msg, isError: true);
       }
+    } on ArgumentError catch (e) {
+      _showMessage(e.message.toString(), isError: true);
     } catch (e) {
       AppLogger.error('Pairing failed', e, StackTrace.current);
       _showMessage(

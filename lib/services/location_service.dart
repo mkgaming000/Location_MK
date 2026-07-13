@@ -3,21 +3,16 @@ import 'dart:async';
 import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter/foundation.dart';
 import 'package:geolocator/geolocator.dart';
+import 'package:permission_handler/permission_handler.dart';
+
+import '../utils/logger.dart';
 
 /// Wraps Android GPS access via [Geolocator] and network status via
 /// [connectivity_plus].
 ///
-/// The location service is **pull-based**: callers receive a [Stream] of
-/// [LocationUpdate] events that fire whenever the device moves more than
-/// [AppConstants.locationDistanceFilterMeters] meters or every
-/// [AppConstants.locationUpdateInterval] (whichever comes first).
-///
-/// Lifecycle:
-/// - [startMonitoring] starts GPS, connectivity streams, and a periodic
-///   heartbeat timer. Safe to call multiple times — duplicate calls are
-///   no-ops while monitoring is active.
-/// - [stopMonitoring] cancels all streams and timers and clears state.
-/// - [dispose] (called once on app teardown) closes all stream controllers.
+/// On Android 14+, this service explicitly checks and requests location
+/// permissions BEFORE starting the position stream. Without this, the
+/// background service crashes with a SecurityException.
 class LocationService {
   LocationService._();
   static final LocationService instance = LocationService._();
@@ -54,7 +49,7 @@ class LocationService {
     try {
       return await Geolocator.isLocationServiceEnabled();
     } catch (e) {
-      debugPrint('[LocationService] isGpsEnabled failed: $e');
+      AppLogger.gps('isGpsEnabled', e, StackTrace.current);
       return false;
     }
   }
@@ -66,7 +61,59 @@ class LocationService {
       final results = await Connectivity().checkConnectivity();
       return results.any((r) => r != ConnectivityResult.none);
     } catch (e) {
-      debugPrint('[LocationService] hasInternet failed: $e');
+      AppLogger.error('hasInternet failed', e);
+      return false;
+    }
+  }
+
+  /// Ensures location permissions are granted before starting the GPS stream.
+  /// This is CRITICAL for Android 14+ where the background service crashes
+  /// if permissions are missing.
+  ///
+  /// Returns `true` if permissions are granted, `false` otherwise.
+  /// Throws on unrecoverable errors.
+  Future<bool> ensurePermissions() async {
+    try {
+      // Check if location service is enabled.
+      final serviceEnabled = await Geolocator.isLocationServiceEnabled();
+      if (!serviceEnabled) {
+        AppLogger.gps('ensurePermissions: location service disabled');
+        return false;
+      }
+
+      // Check foreground location permission.
+      var permission = await Geolocator.checkPermission();
+      if (permission == LocationPermission.denied) {
+        permission = await Geolocator.requestPermission();
+      }
+
+      if (permission == LocationPermission.denied) {
+        AppLogger.gps('ensurePermissions: foreground location denied');
+        return false;
+      }
+
+      if (permission == LocationPermission.deniedForever) {
+        AppLogger.gps('ensurePermissions: foreground location permanently denied');
+        return false;
+      }
+
+      // Check background location permission (Android 10+).
+      final bgStatus = await Permission.locationAlways.status;
+      if (!bgStatus.isGranted) {
+        AppLogger.gps('ensurePermissions: background location not granted');
+        // Try to request it — on Android 11+ this shows the "Allow all the
+        // time" dialog.
+        final result = await Permission.locationAlways.request();
+        if (!result.isGranted) {
+          AppLogger.gps('ensurePermissions: background location request denied');
+          return false;
+        }
+      }
+
+      AppLogger.gps('ensurePermissions: all permissions granted');
+      return true;
+    } catch (e, st) {
+      AppLogger.error('ensurePermissions failed', e, st);
       return false;
     }
   }
@@ -75,8 +122,9 @@ class LocationService {
   // Monitoring start / stop
   // ---------------------------------------------------------------------------
 
-  /// Starts monitoring location and connectivity. The returned stream emits
-  /// the most recent [LocationUpdate] every time a new position is received.
+  /// Starts monitoring location and connectivity.
+  /// Calls [ensurePermissions] first — if permissions are missing, throws
+  /// a [StateError] with a descriptive message.
   Future<void> startMonitoring({
     Duration interval = const Duration(seconds: 4),
     double distanceFilterMeters = 5.0,
@@ -90,40 +138,49 @@ class LocationService {
     if (!_gpsController.isClosed) _gpsController.add(serviceEnabled);
     if (!serviceEnabled) {
       throw StateError(
-        'GPS service is disabled. Please enable location in Settings.',
+        'GPS service is disabled. Enable location in Settings.',
+      );
+    }
+
+    // CRITICAL: Ensure permissions before starting the stream.
+    // Without this, Android 14 crashes with SecurityException.
+    final hasPermissions = await ensurePermissions();
+    if (!hasPermissions) {
+      throw StateError(
+        'Location permissions not granted. Grant "Allow all the time" '
+        'location permission in Settings.',
       );
     }
 
     _isMonitoring = true;
     _lastLocation = null;
 
-    // 1) Connectivity stream — emits initial + ongoing network state.
+    // 1) Connectivity stream.
     _connectivitySub = Connectivity().onConnectivityChanged.listen((results) {
       final online = results.any((r) => r != ConnectivityResult.none);
       if (!_internetController.isClosed) _internetController.add(online);
     });
 
-    // 2) High-frequency position stream (fires on movement or interval).
-    //    Note: geolocator's distanceFilter accepts int (meters). We use the
-    //    int truncation but enforce a minimum of 1m to avoid filtering
-    //    issues with 0.x values.
+    // 2) Position stream.
     final distanceFilterInt = distanceFilterMeters.round().clamp(0, 1000);
     _positionSub = Geolocator.getPositionStream(
       locationSettings: AndroidSettings(
         accuracy: LocationAccuracy.high,
         distanceFilter: distanceFilterInt,
         intervalDuration: interval,
+        // CRITICAL for Android 14+: explicit foreground notification config
+        // is handled by flutter_background_service, but we must set the
+        // locationSettings to use the proper interval.
+        foregroundNotificationConfig: null,
       ),
     ).listen(
       _onPosition,
       onError: (Object error) {
-        debugPrint('[LocationService] position stream error: $error');
+        AppLogger.gps('position stream error', error, StackTrace.current);
       },
     );
 
-    // 3) Periodic safety timer — if no movement for `interval`, the timer
-    //    re-publishes the last known location so the receiver sees a fresh
-    //    heartbeat timestamp.
+    // 3) Periodic heartbeat timer.
     _periodicTimer = Timer.periodic(interval, (_) {
       if (_lastLocation != null) {
         final refreshed = LocationUpdate(
@@ -137,7 +194,7 @@ class LocationService {
       }
     });
 
-    // 4) Fetch an immediate initial position so the UI is not blank.
+    // 4) Fetch an immediate initial position.
     try {
       final initial = await Geolocator.getCurrentPosition(
         locationSettings: const LocationSettings(
@@ -145,8 +202,8 @@ class LocationService {
         ),
       );
       _onPosition(initial);
-    } catch (e) {
-      debugPrint('[LocationService] initial position fetch failed: $e');
+    } catch (e, st) {
+      AppLogger.gps('initial position fetch', e, st);
     }
   }
 
@@ -173,8 +230,7 @@ class LocationService {
     _lastLocation = null;
   }
 
-  /// One-shot fetch of the current location. Useful for the Share screen to
-  /// display the current position before starting the stream.
+  /// One-shot fetch of the current location.
   Future<LocationUpdate?> getCurrentLocation() async {
     final serviceEnabled = await Geolocator.isLocationServiceEnabled();
     if (!serviceEnabled) return null;
@@ -192,13 +248,13 @@ class LocationService {
       );
       _lastLocation = update;
       return update;
-    } catch (e) {
-      debugPrint('[LocationService] getCurrentLocation failed: $e');
+    } catch (e, st) {
+      AppLogger.gps('getCurrentLocation', e, st);
       return null;
     }
   }
 
-  /// Permanently closes all stream controllers. Called once on app teardown.
+  /// Permanently closes all stream controllers.
   Future<void> dispose() async {
     await stopMonitoring();
     await _locationController.close();
