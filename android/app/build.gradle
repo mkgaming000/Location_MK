@@ -27,12 +27,14 @@ if (hasReleaseKeystore) {
 
 android {
     namespace = "com.livelocation.app"
-    compileSdk = 34
+    compileSdk = 36
     ndkVersion = flutter.ndkVersion
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
+        // Required by flutter_local_notifications for Java 8+ time API support.
+        coreLibraryDesugaringEnabled = true
     }
 
     kotlinOptions {
@@ -46,7 +48,7 @@ android {
     defaultConfig {
         applicationId = "com.livelocation.app"
         minSdk = 23
-        targetSdk = 34
+        targetSdk = 36
         versionCode = flutterVersionCode.toInteger()
         versionName = flutterVersionName
         multiDexEnabled = true
@@ -91,4 +93,6 @@ dependencies {
     implementation 'com.google.firebase:firebase-analytics'
     implementation 'com.google.firebase:firebase-auth'
     implementation 'com.google.firebase:firebase-database'
+    // Required by flutter_local_notifications for Java 8+ time API support.
+    coreLibraryDesugaring 'com.android.tools:desugar_jdk_libs:2.1.4'
 }
