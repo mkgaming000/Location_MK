@@ -183,7 +183,7 @@ class FirebaseService {
           .ref('${AppConstants.liveLocationsPath}/$theirDeviceId')
           .get();
       if (snapshot.exists && snapshot.value is Map) {
-        final map = snapshot.value;
+        final map = snapshot.value as Map;
         resolvedName = (map['name'] as String?) ?? theirDeviceName;
         resolvedOwnerUid = (map['owner_uid'] as String?) ?? '';
       }
@@ -271,7 +271,7 @@ class FirebaseService {
     try {
       await _db.goOnline();
       final user = FirebaseAuth.instance.currentUser;
-      await user?.getIdToken(forceRefresh: true);
+      await user?.getIdToken(true);
     } catch (e) {
       debugPrint('Firebase reconnect failed: $e');
     }

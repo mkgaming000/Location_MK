@@ -98,7 +98,7 @@ class _PairDeviceScreenState extends State<PairDeviceScreen>
                       size: 240,
                       backgroundColor: Colors.white,
                       eyeStyle: const QrEyeStyle(
-                        eyeShape: QrEyeShape.extraRoundy,
+                        eyeShape: QrEyeShape.circle,
                         color: Colors.black,
                       ),
                       dataModuleStyle: const QrDataModuleStyle(
