@@ -1,0 +1,595 @@
+name: Android APK Automatic Build
+
+# =============================================================================
+# Location MK — Complete CI/CD Pipeline
+# =============================================================================
+# This workflow runs automatically on every push to main, on pull requests,
+# and via manual dispatch. It performs:
+#   1. Environment setup (Java 17, Flutter stable, Android SDK, Gradle cache)
+#   2. Firebase configuration check
+#   3. Android permission verification
+#   4. Security scan (no exposed secrets)
+#   5. Flutter dependency installation
+#   6. Flutter static analysis
+#   7. Flutter unit tests
+#   8. Automatic versioning (Location-MK-v1.<run_number>)
+#   9. Debug + Release APK build
+#  10. APK output verification
+#  11. APK artifact upload
+#  12. Final BUILD STATUS report
+# =============================================================================
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+env:
+  FLUTTER_CHANNEL: 'stable'
+  JAVA_VERSION: '17'
+  ARTIFACT_NAME: 'Location-MK-APK'
+  VERSION_PREFIX: 'Location-MK-v1'
+  # The Flutter project root relative to the repository root.
+  # If the project is at the repo root, set this to ".".
+  PROJECT_DIR: '.'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Android APK Build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      # =========================================================================
+      # Step 1: Checkout repository
+      # =========================================================================
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # =========================================================================
+      # Step 2: Setup Java JDK 17
+      # =========================================================================
+      - name: Setup Java JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: ${{ env.JAVA_VERSION }}
+
+      # =========================================================================
+      # Step 3: Setup Flutter (stable channel, cached)
+      # =========================================================================
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: ${{ env.FLUTTER_CHANNEL }}
+          cache: true
+
+      # =========================================================================
+      # Step 4: Cache Gradle dependencies
+      # =========================================================================
+      - name: Cache Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ hashFiles('**/*.gradle*', '**/gradle-wrapper.properties') }}
+          restore-keys: |
+            gradle-${{ runner.os }}-
+
+      # =========================================================================
+      # Step 5: Cache Flutter pub packages
+      # =========================================================================
+      - name: Cache Flutter packages
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.pub-cache
+            ${{ env.PROJECT_DIR }}/.dart_tool
+          key: pub-${{ runner.os }}-${{ hashFiles('**/pubspec.lock') }}
+          restore-keys: |
+            pub-${{ runner.os }}-
+
+      # =========================================================================
+      # Step 6: Verify environment installations
+      # =========================================================================
+      - name: Verify Java installation
+        run: |
+          echo "=========================================="
+          echo "  Java Version"
+          echo "=========================================="
+          java -version
+          echo ""
+          echo "JAVA_HOME: $JAVA_HOME"
+          echo "=========================================="
+
+      - name: Verify Flutter installation
+        run: |
+          echo "=========================================="
+          echo "  Flutter Version"
+          echo "=========================================="
+          flutter --version
+          echo "=========================================="
+
+      - name: Run flutter doctor
+        run: |
+          echo "=========================================="
+          echo "  Flutter Doctor"
+          echo "=========================================="
+          flutter doctor -v
+          echo "=========================================="
+
+      # =========================================================================
+      # Step 7: Firebase configuration safety check
+      # =========================================================================
+      - name: Firebase configuration check
+        id: firebase_check
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: |
+          echo "=========================================="
+          echo "  Firebase Configuration Check"
+          echo "=========================================="
+          GOOGLE_SERVICES="android/app/google-services.json"
+          if [ -f "$GOOGLE_SERVICES" ]; then
+            echo "✅ google-services.json found at $GOOGLE_SERVICES"
+            # Verify it's valid JSON
+            if python3 -c "import json; json.load(open('$GOOGLE_SERVICES'))" 2>/dev/null; then
+              echo "✅ google-services.json is valid JSON"
+              echo "firebase_configured=true" >> $GITHUB_OUTPUT
+            else
+              echo "⚠️  google-services.json exists but is invalid JSON"
+              echo "firebase_configured=false" >> $GITHUB_OUTPUT
+            fi
+          else
+            echo "⚠️  Firebase configuration missing!"
+            echo "   google-services.json not found at $GOOGLE_SERVICES"
+            echo ""
+            echo "   Creating a placeholder for CI build..."
+            echo "   NOTE: The APK will compile but will NOT connect to Firebase."
+            echo "   Replace google-services.json with your real config before distribution."
+            mkdir -p android/app
+            cat > "$GOOGLE_SERVICES" << 'FIREBASE_PLACEHOLDER'
+            {
+              "project_info": {
+                "project_number": "000000000000",
+                "project_id": "ci-placeholder-project",
+                "storage_bucket": "ci-placeholder-project.appspot.com"
+              },
+              "client": [
+                {
+                  "client_info": {
+                    "mobilesdk_app_id": "1:000000000000:android:0000000000000000000000",
+                    "android_client_info": {
+                      "package_name": "com.livelocation.app"
+                    }
+                  },
+                  "oauth_client": [],
+                  "api_key": [
+                    {
+                      "current_key": "AIzaSyCI-PLACEHOLDER-KEY-FOR-CI-ONLY"
+                    }
+                  ],
+                  "services": {
+                    "appinvite_service": {
+                      "other_platform_oauth_client": []
+                    }
+                  }
+                }
+              ],
+              "configuration_version": "1"
+            }
+            FIREBASE_PLACEHOLDER
+            echo "firebase_configured=false" >> $GITHUB_OUTPUT
+          fi
+          echo "=========================================="
+
+      # =========================================================================
+      # Step 8: Android permission verification
+      # =========================================================================
+      - name: Verify Android permissions
+        id: permissions_check
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: |
+          chmod +x scripts/verify_permissions.sh
+          ./scripts/verify_permissions.sh android/app/src/main/AndroidManifest.xml
+
+      # =========================================================================
+      # Step 9: Security scan
+      # =========================================================================
+      - name: Security scan
+        id: security_scan
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: |
+          chmod +x scripts/security_scan.sh
+          ./scripts/security_scan.sh .
+
+      # =========================================================================
+      # Step 10: Install Flutter dependencies
+      # =========================================================================
+      - name: Install dependencies
+        id: pub_get
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: |
+          echo "=========================================="
+          echo "  Installing Flutter Dependencies"
+          echo "=========================================="
+          flutter pub get
+          echo "=========================================="
+          echo "✅ Dependencies installed successfully."
+
+      # =========================================================================
+      # Step 11: Run Flutter static analysis
+      # =========================================================================
+      - name: Run Flutter analyze
+        id: analyze
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: |
+          echo "=========================================="
+          echo "  Flutter Static Analysis"
+          echo "=========================================="
+          flutter analyze --no-fatal-infos
+          echo "=========================================="
+          echo "✅ Static analysis passed — no errors found."
+
+      # =========================================================================
+      # Step 12: Run Flutter unit tests
+      # =========================================================================
+      - name: Run Flutter tests
+        id: tests
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: |
+          echo "=========================================="
+          echo "  Running Unit Tests"
+          echo "=========================================="
+          flutter test
+          echo "=========================================="
+          echo "✅ All unit tests passed."
+
+      # =========================================================================
+      # Step 13: Automatic versioning — update pubspec.yaml version
+      # =========================================================================
+      - name: Generate version and build info
+        id: versioning
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: |
+          echo "=========================================="
+          echo "  Automatic Versioning"
+          echo "=========================================="
+          VERSION="${{ env.VERSION_PREFIX }}.${{ github.run_number }}"
+          BUILD_NUMBER="${{ github.run_number }}"
+          echo "Version: $VERSION"
+          echo "Build Number: $BUILD_NUMBER"
+          echo "Commit: ${{ github.sha }}"
+          echo "Branch: ${{ github.ref_name }}"
+          echo ""
+
+          # Update pubspec.yaml version so the APK embeds the correct version.
+          # Format: version: 1.0.<run_number>+<run_number>
+          PUBSPEC_VERSION="1.0.${BUILD_NUMBER}+${BUILD_NUMBER}"
+          sed -i "s/^version:.*/version: ${PUBSPEC_VERSION}/" pubspec.yaml
+          echo "Updated pubspec.yaml version to: $PUBSPEC_VERSION"
+          grep "^version:" pubspec.yaml
+          echo ""
+
+          # Generate build_info.txt
+          chmod +x scripts/generate_build_info.sh
+          ./scripts/generate_build_info.sh \
+            "$VERSION" \
+            "${{ github.sha }}" \
+            "${{ github.ref_name }}" \
+            "$BUILD_NUMBER"
+
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "build_number=$BUILD_NUMBER" >> $GITHUB_OUTPUT
+          echo "=========================================="
+
+      # =========================================================================
+      # Step 14: Build Debug APK
+      # =========================================================================
+      - name: Build Debug APK
+        id: debug_build
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: |
+          echo "=========================================="
+          echo "  Building Debug APK"
+          echo "=========================================="
+          flutter build apk --debug
+          echo "=========================================="
+          echo "✅ Debug APK built successfully."
+
+      # =========================================================================
+      # Step 15: Build Release APK
+      # =========================================================================
+      - name: Build Release APK
+        id: release_build
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: |
+          echo "=========================================="
+          echo "  Building Release APK"
+          echo "=========================================="
+          flutter build apk --release --no-tree-shake-icons
+          echo "=========================================="
+          echo "✅ Release APK built successfully."
+
+      # =========================================================================
+      # Step 16: Verify APK output exists
+      # =========================================================================
+      - name: Verify APK generation
+        id: apk_verify
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: |
+          echo "=========================================="
+          echo "  APK Output Verification"
+          echo "=========================================="
+          APK_DIR="build/app/outputs/flutter-apk"
+          DEBUG_APK="$APK_DIR/app-debug.apk"
+          RELEASE_APK="$APK_DIR/app-release.apk"
+
+          VERIFIED=true
+
+          if [ -f "$DEBUG_APK" ]; then
+            DEBUG_SIZE=$(du -h "$DEBUG_APK" | cut -f1)
+            echo "✅ Debug APK found: $DEBUG_APK ($DEBUG_SIZE)"
+          else
+            echo "❌ Debug APK NOT found at: $DEBUG_APK"
+            VERIFIED=false
+          fi
+
+          if [ -f "$RELEASE_APK" ]; then
+            RELEASE_SIZE=$(du -h "$RELEASE_APK" | cut -f1)
+            echo "✅ Release APK found: $RELEASE_APK ($RELEASE_SIZE)"
+          else
+            echo "❌ Release APK NOT found at: $RELEASE_APK"
+            VERIFIED=false
+          fi
+
+          echo ""
+          echo "APK Directory Contents:"
+          ls -lh "$APK_DIR/" 2>/dev/null || echo "  Directory does not exist!"
+          echo ""
+
+          if [ "$VERIFIED" = false ]; then
+            echo "::error::APK generation verification failed — one or more APKs are missing!"
+            exit 1
+          fi
+          echo "✅ All APKs verified successfully."
+          echo "=========================================="
+
+      # =========================================================================
+      # Step 17: Upload APK artifact
+      # =========================================================================
+      - name: Upload APK artifact
+        id: upload_artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ARTIFACT_NAME }}
+          path: |
+            ${{ env.PROJECT_DIR }}/build/app/outputs/flutter-apk/*.apk
+            ${{ env.PROJECT_DIR }}/build_info.txt
+          retention-days: 30
+          compression-level: 9
+          if-no-files-found: error
+
+      # =========================================================================
+      # Step 18: Upload build logs on failure
+      # =========================================================================
+      - name: Upload build logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs-failure
+          path: |
+            ${{ env.PROJECT_DIR }}/build/app/outputs/
+            ${{ env.PROJECT_DIR }}/.dart_tool/
+          retention-days: 7
+          if-no-files-found: ignore
+
+      # =========================================================================
+      # Step 19: Generate Final BUILD STATUS Report
+      # =========================================================================
+      - name: Generate BUILD STATUS report
+        if: always()
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: |
+          # Determine the status of each step
+          FIREBASE_STATUS="✅ PASS"
+          if [ "${{ steps.firebase_check.outputs.firebase_configured }}" = "false" ]; then
+            FIREBASE_STATUS="⚠️ WARN (placeholder)"
+          fi
+
+          PERMISSIONS_STATUS="✅ PASS"
+          if [ "${{ steps.permissions_check.outcome }}" != "success" ]; then
+            PERMISSIONS_STATUS="❌ FAIL"
+          fi
+
+          SECURITY_STATUS="✅ PASS"
+          if [ "${{ steps.security_scan.outcome }}" != "success" ]; then
+            SECURITY_STATUS="❌ FAIL"
+          fi
+
+          PUB_GET_STATUS="✅ PASS"
+          if [ "${{ steps.pub_get.outcome }}" != "success" ]; then
+            PUB_GET_STATUS="❌ FAIL"
+          fi
+
+          ANALYZE_STATUS="✅ PASS"
+          if [ "${{ steps.analyze.outcome }}" != "success" ]; then
+            ANALYZE_STATUS="❌ FAIL"
+          fi
+
+          TESTS_STATUS="✅ PASS"
+          if [ "${{ steps.tests.outcome }}" != "success" ]; then
+            TESTS_STATUS="❌ FAIL"
+          fi
+
+          DEBUG_BUILD_STATUS="✅ PASS"
+          if [ "${{ steps.debug_build.outcome }}" != "success" ]; then
+            DEBUG_BUILD_STATUS="❌ FAIL"
+          fi
+
+          RELEASE_BUILD_STATUS="✅ PASS"
+          if [ "${{ steps.release_build.outcome }}" != "success" ]; then
+            RELEASE_BUILD_STATUS="❌ FAIL"
+          fi
+
+          APK_VERIFY_STATUS="✅ PASS"
+          if [ "${{ steps.apk_verify.outcome }}" != "success" ]; then
+            APK_VERIFY_STATUS="❌ FAIL"
+          fi
+
+          ARTIFACT_STATUS="✅ PASS"
+          if [ "${{ steps.upload_artifact.outcome }}" != "success" ]; then
+            ARTIFACT_STATUS="❌ FAIL"
+          fi
+
+          # Overall build status
+          OVERALL="PASS"
+          for s in "$PERMISSIONS_STATUS" "$SECURITY_STATUS" "$PUB_GET_STATUS" \
+                   "$ANALYZE_STATUS" "$TESTS_STATUS" "$DEBUG_BUILD_STATUS" \
+                   "$RELEASE_BUILD_STATUS" "$APK_VERIFY_STATUS" "$ARTIFACT_STATUS"; do
+            if echo "$s" | grep -q "FAIL"; then
+              OVERALL="FAIL"
+              break
+            fi
+          done
+
+          VERSION="${{ steps.versioning.outputs.version }}"
+          COMMIT_SHORT="${{ github.sha }}"
+          COMMIT_SHORT="${COMMIT_SHORT:0:7}"
+          BUILD_DATE="$(date -u '+%Y-%m-%d %H:%M:%S UTC')"
+
+          # Collect any error messages
+          ERRORS=""
+          if [ "$PERMISSIONS_STATUS" = "❌ FAIL" ]; then
+            ERRORS="${ERRORS}- Android permission verification failed\n"
+          fi
+          if [ "$SECURITY_STATUS" = "❌ FAIL" ]; then
+            ERRORS="${ERRORS}- Security scan detected exposed secrets\n"
+          fi
+          if [ "$PUB_GET_STATUS" = "❌ FAIL" ]; then
+            ERRORS="${ERRORS}- Flutter dependency installation failed\n"
+          fi
+          if [ "$ANALYZE_STATUS" = "❌ FAIL" ]; then
+            ERRORS="${ERRORS}- Flutter static analysis found errors\n"
+          fi
+          if [ "$TESTS_STATUS" = "❌ FAIL" ]; then
+            ERRORS="${ERRORS}- Unit tests failed\n"
+          fi
+          if [ "$DEBUG_BUILD_STATUS" = "❌ FAIL" ]; then
+            ERRORS="${ERRORS}- Debug APK build failed\n"
+          fi
+          if [ "$RELEASE_BUILD_STATUS" = "❌ FAIL" ]; then
+            ERRORS="${ERRORS}- Release APK build failed\n"
+          fi
+          if [ "$APK_VERIFY_STATUS" = "❌ FAIL" ]; then
+            ERRORS="${ERRORS}- APK output verification failed — APK file not found\n"
+          fi
+          if [ "$ARTIFACT_STATUS" = "❌ FAIL" ]; then
+            ERRORS="${ERRORS}- APK artifact upload failed\n"
+          fi
+          if [ -z "$ERRORS" ]; then
+            ERRORS="None — all steps completed successfully."
+          fi
+
+          # APK location
+          APK_LOCATION="build/app/outputs/flutter-apk/"
+          APK_FILES=""
+          if ls build/app/outputs/flutter-apk/*.apk 1>/dev/null 2>&1; then
+            for f in build/app/outputs/flutter-apk/*.apk; do
+              SIZE=$(du -h "$f" | cut -f1)
+              APK_FILES="${APK_FILES}  - $(basename $f) ($SIZE)\n"
+            done
+          else
+            APK_FILES="  No APK files generated."
+          fi
+
+          # Print to console
+          echo ""
+          echo "============================================================"
+          echo "                  BUILD STATUS REPORT"
+          echo "============================================================"
+          echo ""
+          printf "%-30s %s\n" "Firebase Config:" "$FIREBASE_STATUS"
+          printf "%-30s %s\n" "Android Permissions:" "$PERMISSIONS_STATUS"
+          printf "%-30s %s\n" "Security Scan:" "$SECURITY_STATUS"
+          printf "%-30s %s\n" "Flutter Pub Get:" "$PUB_GET_STATUS"
+          printf "%-30s %s\n" "Flutter Analyze:" "$ANALYZE_STATUS"
+          printf "%-30s %s\n" "Unit Tests:" "$TESTS_STATUS"
+          printf "%-30s %s\n" "Debug APK Build:" "$DEBUG_BUILD_STATUS"
+          printf "%-30s %s\n" "Release APK Build:" "$RELEASE_BUILD_STATUS"
+          printf "%-30s %s\n" "APK Verification:" "$APK_VERIFY_STATUS"
+          printf "%-30s %s\n" "Artifact Upload:" "$ARTIFACT_STATUS"
+          echo ""
+          printf "%-30s %s\n" "OVERALL BUILD STATUS:" "$OVERALL"
+          echo ""
+          echo "------------------------------------------------------------"
+          printf "%-30s %s\n" "Version:" "$VERSION"
+          printf "%-30s %s\n" "Build Number:" "${{ github.run_number }}"
+          printf "%-30s %s\n" "Commit:" "$COMMIT_SHORT"
+          printf "%-30s %s\n" "Branch:" "${{ github.ref_name }}"
+          printf "%-30s %s\n" "Build Date:" "$BUILD_DATE"
+          echo ""
+          echo "APK Location:"
+          echo -e "$APK_FILES"
+          echo "------------------------------------------------------------"
+          echo "Errors:"
+          echo -e "$ERRORS"
+          echo "------------------------------------------------------------"
+          echo "============================================================"
+
+          # Write to GitHub Step Summary (displayed in the Actions UI)
+          {
+            echo "## 📱 BUILD STATUS — ${OVERALL}"
+            echo ""
+            echo "| Step | Status |"
+            echo "|------|--------|"
+            echo "| Firebase Config | ${FIREBASE_STATUS} |"
+            echo "| Android Permissions | ${PERMISSIONS_STATUS} |"
+            echo "| Security Scan | ${SECURITY_STATUS} |"
+            echo "| Flutter Pub Get | ${PUB_GET_STATUS} |"
+            echo "| Flutter Analyze | ${ANALYZE_STATUS} |"
+            echo "| Unit Tests | ${TESTS_STATUS} |"
+            echo "| Debug APK Build | ${DEBUG_BUILD_STATUS} |"
+            echo "| Release APK Build | ${RELEASE_BUILD_STATUS} |"
+            echo "| APK Verification | ${APK_VERIFY_STATUS} |"
+            echo "| Artifact Upload | ${ARTIFACT_STATUS} |"
+            echo ""
+            echo "### Build Information"
+            echo ""
+            echo "| Field | Value |"
+            echo "|-------|-------|"
+            echo "| Version | \`${VERSION}\` |"
+            echo "| Build Number | \`${{ github.run_number }}\` |"
+            echo "| Commit | \`${COMMIT_SHORT}\` |"
+            echo "| Branch | \`${{ github.ref_name }}\` |"
+            echo "| Build Date | \`${BUILD_DATE}\` |"
+            echo ""
+            echo "### APK Files"
+            echo ""
+            echo '```'
+            echo -e "$APK_FILES"
+            echo '```'
+            echo ""
+            echo "### Errors"
+            echo ""
+            echo -e "$ERRORS"
+            echo ""
+            echo "### Artifact"
+            echo ""
+            echo "📦 Artifact name: \`${{ env.ARTIFACT_NAME }}\`"
+            echo "📅 Retention: 30 days"
+            echo "📥 Download from the workflow run page."
+          } >> $GITHUB_STEP_SUMMARY
+
+          # Exit with appropriate code
+          if [ "$OVERALL" = "FAIL" ]; then
+            exit 1
+          fi
