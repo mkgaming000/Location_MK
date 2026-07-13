@@ -1,7 +1,7 @@
 import 'dart:async';
 
 import 'package:firebase_auth/firebase_auth.dart';
-import 'package:firebase_database/firebase_database.dart';
+import 'package:firebase_core/firebase_core.dart';
 
 /// Centralized error-handling helpers that translate platform exceptions into
 /// specific, actionable, user-friendly messages.
