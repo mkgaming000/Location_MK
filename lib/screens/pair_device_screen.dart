@@ -16,13 +16,9 @@ import '../utils/logger.dart';
 /// Pairing flow:
 /// 1. Validate Device ID format (8-64 chars)
 /// 2. Prevent self-pairing
-/// 3. Check authentication
+/// 3. Ensure authentication (wait for anonymous sign-in)
 /// 4. Check for duplicate pairing
 /// 5. Write pairing entry to Firebase
-///
-/// Note: The device doesn't need to be "online" or have shared location
-/// to be paired. Pairing just creates a record in `pairings/{myId}/{theirId}`.
-/// Once they start sharing, you'll see their location.
 class PairDeviceScreen extends StatefulWidget {
   const PairDeviceScreen({super.key});
 
@@ -308,7 +304,7 @@ class _PairDeviceScreenState extends State<PairDeviceScreen>
   }
 
   // ---------------------------------------------------------------------------
-  // Pairing logic — with specific error messages
+  // Pairing logic — with specific error messages and auth retry
   // ---------------------------------------------------------------------------
   Future<void> _pairByManualEntry() async {
     final id = _deviceIdCtrl.text.trim();
@@ -347,18 +343,23 @@ class _PairDeviceScreenState extends State<PairDeviceScreen>
       return;
     }
 
-    // 4. Check authentication
-    if (AuthService.instance.uid == null) {
-      _showMessage(
-        'Authentication failed. Restart the app to sign in.',
-        isError: true,
-      );
-      return;
-    }
-
     setState(() => _isPairing = true);
 
     try {
+      // 4. Ensure authentication — wait for anonymous sign-in to complete.
+      // This is CRITICAL: if we try to write to Firebase before auth is ready,
+      // the write will fail with permission-denied.
+      AppLogger.info('Ensuring authentication before pairing...');
+      final authed = await AuthService.instance.ensureAuthenticated();
+      if (!authed) {
+        _showMessage(
+          'Authentication failed. Check your internet connection and try again.',
+          isError: true,
+        );
+        return;
+      }
+      AppLogger.info('Authentication ready. UID: ${AuthService.instance.uid}');
+
       // 5. Check for duplicate pairing FIRST (before Firebase write)
       final alreadyPaired =
           await FirebaseService.instance.isAlreadyPaired(myId, id);
@@ -371,9 +372,6 @@ class _PairDeviceScreenState extends State<PairDeviceScreen>
       }
 
       // 6. Attempt to pair — write to pairings/{myId}/{theirId}
-      // The name is either user-supplied or a default.
-      // We do NOT need to read live_locations first — pairing is independent
-      // of whether the device has shared its location.
       final name = _deviceNameCtrl.text.trim().isEmpty
           ? 'Paired Device'
           : _deviceNameCtrl.text.trim();

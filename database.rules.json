@@ -3,36 +3,20 @@
     "live_locations": {
       "$device_id": {
         ".read": "auth != null",
-        ".write": "auth != null",
-        "name": { ".validate": "newData.isString() && newData.val().length > 0 && newData.val().length <= 100" },
-        "latitude": { ".validate": "newData.isNumber() && newData.val() >= -90 && newData.val() <= 90" },
-        "longitude": { ".validate": "newData.isNumber() && newData.val() >= -180 && newData.val() <= 180" },
-        "accuracy": { ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 5000" },
-        "timestamp": { ".validate": "newData.isNumber()" },
-        "online": { ".validate": "newData.isBoolean()" },
-        "owner_uid": { ".validate": "newData.isString()" },
-        "$other": { ".validate": false }
+        ".write": "auth != null"
       }
     },
     "user_devices": {
       "$uid": {
         ".read": "auth != null",
-        ".write": "auth != null && auth.uid === $uid",
-        "device_id": { ".validate": "newData.isString() && newData.val().length > 0 && newData.val().length <= 64" },
-        "device_name": { ".validate": "newData.isString() && newData.val().length <= 100" },
-        "updated_at": { ".validate": "newData.isNumber()" },
-        "$other": { ".validate": false }
+        ".write": "auth != null && auth.uid === $uid"
       }
     },
     "pairings": {
       "$owner_device_id": {
         ".read": "auth != null",
         "$paired_device_id": {
-          ".write": "auth != null",
-          "name": { ".validate": "newData.isString() && newData.val().length <= 100" },
-          "owner_uid": { ".validate": "newData.isString()" },
-          "added_at": { ".validate": "newData.isNumber()" },
-          "$other": { ".validate": false }
+          ".write": "auth != null"
         }
       }
     }
