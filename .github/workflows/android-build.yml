@@ -227,6 +227,25 @@ jobs:
           echo "✅ Dependencies installed successfully."
 
       # =========================================================================
+      # Step 10b: Create local.properties for Gradle
+      # =========================================================================
+      - name: Create local.properties
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: |
+          echo "=========================================="
+          echo "  Creating local.properties"
+          echo "=========================================="
+          # The settings.gradle reads flutter.sdk from local.properties.
+          # In CI, we use the FLUTTER_ROOT environment variable set by
+          # the flutter-action.
+          echo "sdk.dir=$ANDROID_SDK_ROOT" > android/local.properties
+          echo "flutter.sdk=$FLUTTER_ROOT" >> android/local.properties
+          echo "flutter.buildMode=debug" >> android/local.properties
+          echo "✅ local.properties created:"
+          cat android/local.properties
+          echo "=========================================="
+
+      # =========================================================================
       # Step 11: Run Flutter static analysis
       # =========================================================================
       - name: Run Flutter analyze
