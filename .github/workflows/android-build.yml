@@ -155,37 +155,39 @@ jobs:
             echo "   NOTE: The APK will compile but will NOT connect to Firebase."
             echo "   Replace google-services.json with your real config before distribution."
             mkdir -p android/app
-            cat > "$GOOGLE_SERVICES" << 'FIREBASE_PLACEHOLDER'
-            {
-              "project_info": {
-                "project_number": "000000000000",
-                "project_id": "ci-placeholder-project",
-                "storage_bucket": "ci-placeholder-project.appspot.com"
-              },
-              "client": [
-                {
-                  "client_info": {
-                    "mobilesdk_app_id": "1:000000000000:android:0000000000000000000000",
-                    "android_client_info": {
-                      "package_name": "com.livelocation.app"
-                    }
-                  },
-                  "oauth_client": [],
-                  "api_key": [
-                    {
-                      "current_key": "AIzaSyCI-PLACEHOLDER-KEY-FOR-CI-ONLY"
-                    }
-                  ],
-                  "services": {
-                    "appinvite_service": {
-                      "other_platform_oauth_client": []
-                    }
-                  }
-                }
-              ],
-              "configuration_version": "1"
-            }
-            FIREBASE_PLACEHOLDER
+            # Write placeholder google-services.json using printf to avoid
+            # heredoc indentation issues in YAML.
+            printf '%s\n' \
+              '{' \
+              '  "project_info": {' \
+              '    "project_number": "000000000000",' \
+              '    "project_id": "ci-placeholder-project",' \
+              '    "storage_bucket": "ci-placeholder-project.appspot.com"' \
+              '  },' \
+              '  "client": [' \
+              '    {' \
+              '      "client_info": {' \
+              '        "mobilesdk_app_id": "1:000000000000:android:0000000000000000000000",' \
+              '        "android_client_info": {' \
+              '          "package_name": "com.livelocation.app"' \
+              '        }' \
+              '      },' \
+              '      "oauth_client": [],' \
+              '      "api_key": [' \
+              '        {' \
+              '          "current_key": "AIzaSyCI-PLACEHOLDER-KEY-FOR-CI-ONLY"' \
+              '        }' \
+              '      ],' \
+              '      "services": {' \
+              '        "appinvite_service": {' \
+              '          "other_platform_oauth_client": []' \
+              '        }' \
+              '      }' \
+              '    }' \
+              '  ],' \
+              '  "configuration_version": "1"' \
+              '}' > "$GOOGLE_SERVICES"
+            echo "✅ Placeholder google-services.json created."
             echo "firebase_configured=false" >> $GITHUB_OUTPUT
           fi
           echo "=========================================="
