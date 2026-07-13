@@ -44,8 +44,8 @@ migrate_working_dir/
 # Keep gradle-wrapper.properties tracked (it should be committed)
 !**/android/gradle/wrapper/gradle-wrapper.properties
 
-# Firebase
-google-services.json
+# Firebase — google-services.json IS committed so CI builds connect to real Firebase
+# (API keys in this file are restricted to the Android package name + SHA-1)
 GoogleService-Info.plist
 
 # Environment files

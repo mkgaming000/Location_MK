@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "37825268777",
+    "project_id": "location-mk",
+    "storage_bucket": "location-mk.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:37825268777:android:324402fde9a373fc38a038",
+        "android_client_info": {
+          "package_name": "com.livelocation.app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAUhbQuyelyQ66SB9c3ihEdbzyBCTunu5Y"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
