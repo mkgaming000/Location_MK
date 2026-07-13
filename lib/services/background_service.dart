@@ -215,15 +215,24 @@ class BackgroundService {
         // Continue anyway — the write to live_locations may still succeed.
       }
 
-      await _beginSharing(
-        deviceId: activeDeviceId!,
-        deviceName: activeDeviceName!,
-        location: location,
-        firebase: firebase,
-        setLocationSub: (s) => locationSub = s,
-        setConnectivitySub: (s) => connectivitySub = s,
-        setHeartbeat: (t) => heartbeatTimer = t,
-      );
+      // Start location monitoring + publishing.
+      // Wrapped in try-catch to prevent isolate crashes on Android 14.
+      try {
+        await _beginSharing(
+          deviceId: activeDeviceId!,
+          deviceName: activeDeviceName!,
+          location: location,
+          firebase: firebase,
+          setLocationSub: (s) => locationSub = s,
+          setConnectivitySub: (s) => connectivitySub = s,
+          setHeartbeat: (t) => heartbeatTimer = t,
+        );
+      } catch (e, st) {
+        AppLogger.error('_beginSharing failed — stopping service', e, st);
+        isSharing = false;
+        // Stop the service so it doesn't linger in a broken state.
+        service.stopSelf();
+      }
     });
 
     service.on('stop-sharing').listen((event) async {

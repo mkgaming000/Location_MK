@@ -154,7 +154,18 @@ class _ShareScreenState extends State<ShareScreen>
         return;
       }
 
-      // 6. Start the foreground service
+      // 6. Double-check permissions are actually granted (not just requested)
+      final hasPerms = await _location.hasPermissions();
+      if (!hasPerms) {
+        _showMessage(
+          'Location permissions not fully granted. Go to Settings → '
+          'Permissions → Location → "Allow all the time".',
+          openSettings: true,
+        );
+        return;
+      }
+
+      // 7. Start the foreground service
       await _background.startSharing(
         deviceId: _identity.deviceId!,
         deviceName: _identity.deviceName!,

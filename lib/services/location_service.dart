@@ -9,9 +9,10 @@ import '../utils/logger.dart';
 /// Wraps Android GPS access via [Geolocator] and network status via
 /// [connectivity_plus].
 ///
-/// On Android 14+, this service explicitly checks and requests location
-/// permissions BEFORE starting the position stream. Without this, the
-/// background service crashes with a SecurityException.
+/// CRITICAL: This service runs in BOTH the main isolate AND the background
+/// service isolate. When running in the background isolate, it CANNOT show
+/// permission dialogs — permissions must be granted from the UI before the
+/// background service starts.
 class LocationService {
   LocationService._();
   static final LocationService instance = LocationService._();
@@ -43,7 +44,6 @@ class LocationService {
   // GPS state checks
   // ---------------------------------------------------------------------------
 
-  /// Returns `true` if the device GPS service is enabled.
   Future<bool> isGpsEnabled() async {
     try {
       return await Geolocator.isLocationServiceEnabled();
@@ -53,8 +53,6 @@ class LocationService {
     }
   }
 
-  /// Returns `true` if the device currently has an active internet
-  /// connection (WiFi, mobile, or ethernet).
   Future<bool> hasInternet() async {
     try {
       final results = await Connectivity().checkConnectivity();
@@ -65,54 +63,39 @@ class LocationService {
     }
   }
 
-  /// Ensures location permissions are granted before starting the GPS stream.
-  /// This is CRITICAL for Android 14+ where the background service crashes
-  /// if permissions are missing.
+  /// Checks (but does NOT request) location permissions.
+  /// Safe to call from the background isolate — never shows dialogs.
   ///
-  /// Returns `true` if permissions are granted, `false` otherwise.
-  /// Throws on unrecoverable errors.
-  Future<bool> ensurePermissions() async {
+  /// Returns `true` only if ALL required permissions are already granted:
+  /// - Location service enabled
+  /// - Foreground location granted
+  /// - Background location granted (Android 10+)
+  Future<bool> hasPermissions() async {
     try {
-      // Check if location service is enabled.
       final serviceEnabled = await Geolocator.isLocationServiceEnabled();
       if (!serviceEnabled) {
-        AppLogger.gps('ensurePermissions: location service disabled');
+        AppLogger.gps('hasPermissions: location service disabled');
         return false;
       }
 
-      // Check foreground location permission.
-      var permission = await Geolocator.checkPermission();
-      if (permission == LocationPermission.denied) {
-        permission = await Geolocator.requestPermission();
-      }
-
-      if (permission == LocationPermission.denied) {
-        AppLogger.gps('ensurePermissions: foreground location denied');
+      final permission = await Geolocator.checkPermission();
+      if (permission == LocationPermission.denied ||
+          permission == LocationPermission.deniedForever) {
+        AppLogger.gps('hasPermissions: foreground location not granted ($permission)');
         return false;
       }
 
-      if (permission == LocationPermission.deniedForever) {
-        AppLogger.gps('ensurePermissions: foreground location permanently denied');
-        return false;
-      }
-
-      // Check background location permission (Android 10+).
+      // Check background location (Android 10+).
       final bgStatus = await Permission.locationAlways.status;
       if (!bgStatus.isGranted) {
-        AppLogger.gps('ensurePermissions: background location not granted');
-        // Try to request it — on Android 11+ this shows the "Allow all the
-        // time" dialog.
-        final result = await Permission.locationAlways.request();
-        if (!result.isGranted) {
-          AppLogger.gps('ensurePermissions: background location request denied');
-          return false;
-        }
+        AppLogger.gps('hasPermissions: background location not granted');
+        return false;
       }
 
-      AppLogger.gps('ensurePermissions: all permissions granted');
+      AppLogger.gps('hasPermissions: all permissions granted');
       return true;
     } catch (e, st) {
-      AppLogger.error('ensurePermissions failed', e, st);
+      AppLogger.error('hasPermissions failed', e, st);
       return false;
     }
   }
@@ -122,8 +105,9 @@ class LocationService {
   // ---------------------------------------------------------------------------
 
   /// Starts monitoring location and connectivity.
-  /// Calls [ensurePermissions] first — if permissions are missing, throws
-  /// a [StateError] with a descriptive message.
+  /// Does NOT request permissions — only checks them. If permissions are
+  /// missing, throws a [StateError] with a descriptive message.
+  /// Permission requests must happen in the UI isolate before calling this.
   Future<void> startMonitoring({
     Duration interval = const Duration(seconds: 4),
     double distanceFilterMeters = 5.0,
@@ -141,13 +125,13 @@ class LocationService {
       );
     }
 
-    // CRITICAL: Ensure permissions before starting the stream.
-    // Without this, Android 14 crashes with SecurityException.
-    final hasPermissions = await ensurePermissions();
-    if (!hasPermissions) {
+    // CHECK permissions (do NOT request — this runs in background isolate
+    // on Android 14 where requesting permissions crashes the app).
+    final hasPerms = await hasPermissions();
+    if (!hasPerms) {
       throw StateError(
         'Location permissions not granted. Grant "Allow all the time" '
-        'location permission in Settings.',
+        'location permission in Settings before starting sharing.',
       );
     }
 
@@ -161,16 +145,15 @@ class LocationService {
     });
 
     // 2) Position stream.
+    //    Use LocationSettings (NOT AndroidSettings) to avoid foreground
+    //    notification conflicts with flutter_background_service.
+    //    The background service IS the foreground service — geolocator
+    //    must NOT try to create its own.
     final distanceFilterInt = distanceFilterMeters.round().clamp(0, 1000);
     _positionSub = Geolocator.getPositionStream(
-      locationSettings: AndroidSettings(
+      locationSettings: LocationSettings(
         accuracy: LocationAccuracy.high,
         distanceFilter: distanceFilterInt,
-        intervalDuration: interval,
-        // CRITICAL for Android 14+: explicit foreground notification config
-        // is handled by flutter_background_service, but we must set the
-        // locationSettings to use the proper interval.
-        foregroundNotificationConfig: null,
       ),
     ).listen(
       _onPosition,
@@ -217,7 +200,6 @@ class LocationService {
     if (!_locationController.isClosed) _locationController.add(update);
   }
 
-  /// Stops all monitoring streams and timers.
   Future<void> stopMonitoring() async {
     _isMonitoring = false;
     await _positionSub?.cancel();
@@ -229,7 +211,6 @@ class LocationService {
     _lastLocation = null;
   }
 
-  /// One-shot fetch of the current location.
   Future<LocationUpdate?> getCurrentLocation() async {
     final serviceEnabled = await Geolocator.isLocationServiceEnabled();
     if (!serviceEnabled) return null;
@@ -253,7 +234,6 @@ class LocationService {
     }
   }
 
-  /// Permanently closes all stream controllers.
   Future<void> dispose() async {
     await stopMonitoring();
     await _locationController.close();
