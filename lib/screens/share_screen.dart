@@ -280,8 +280,8 @@ class _ShareScreenState extends State<ShareScreen> {
               const SizedBox(height: 10),
               StatusCard(
                 icon: _isSharing
-                    ? Icons.broadcast_on_rounded
-                    : Icons.broadcast_on_personal_rounded,
+                    ? Icons.gps_fixed_rounded
+                    : Icons.gps_not_fixed_rounded,
                 label: 'Sharing Status',
                 value: _isSharing ? 'Active' : 'Stopped',
                 statusColor: _isSharing ? scheme.primary : scheme.outline,

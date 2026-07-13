@@ -83,7 +83,7 @@ class AuthService with ChangeNotifier {
     }
     // Force-refresh the ID token so DB rules see a fresh session.
     try {
-      await _auth.currentUser?.getIdToken(refresh: true);
+      await _auth.currentUser?.getIdToken(forceRefresh: true);
     } catch (e) {
       debugPrint('AuthService token refresh failed: $e');
     }

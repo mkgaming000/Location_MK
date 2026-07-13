@@ -105,7 +105,7 @@ class BackgroundService {
     if (!_configured) {
       await initialize();
     }
-    if (!await _service.isServiceRunning()) {
+    if (!await _service.isRunning()) {
       await _service.startService();
     }
     _service.invoke('start-sharing', {
@@ -119,7 +119,7 @@ class BackgroundService {
     _service.invoke('stop-sharing', {'device_id': deviceId});
     // Give the service a moment to flush the offline marker, then stop it.
     await Future.delayed(const Duration(milliseconds: 500));
-    if (await _service.isServiceRunning()) {
+    if (await _service.isRunning()) {
       _service.invoke('stop-service');
     }
   }
@@ -127,7 +127,7 @@ class BackgroundService {
   /// Returns whether the foreground service is currently running.
   Future<bool> isSharing() async {
     if (!_configured) return false;
-    return _service.isServiceRunning();
+    return _service.isRunning();
   }
 
   // ---------------------------------------------------------------------------

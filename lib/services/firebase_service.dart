@@ -139,8 +139,7 @@ class FirebaseService {
       if (!snapshot.exists || snapshot.value == null) return null;
       final value = snapshot.value;
       if (value is! Map) return null;
-      final map = value as Map<dynamic, dynamic>;
-      return LiveLocation.fromMap(map, deviceId);
+      return LiveLocation.fromMap(value, deviceId);
     }).handleError((error) {
       debugPrint('[FirebaseService] watchLocation($deviceId) error: $error');
     });
@@ -184,7 +183,7 @@ class FirebaseService {
           .ref('${AppConstants.liveLocationsPath}/$theirDeviceId')
           .get();
       if (snapshot.exists && snapshot.value is Map) {
-        final map = snapshot.value as Map<dynamic, dynamic>;
+        final map = snapshot.value;
         resolvedName = (map['name'] as String?) ?? theirDeviceName;
         resolvedOwnerUid = (map['owner_uid'] as String?) ?? '';
       }
@@ -231,11 +230,10 @@ class FirebaseService {
       if (!snapshot.exists || snapshot.value == null) return <Device>[];
       final value = snapshot.value;
       if (value is! Map) return <Device>[];
-      final map = value as Map<dynamic, dynamic>;
       final devices = <Device>[];
-      map.forEach((key, value) {
-        if (value is Map) {
-          devices.add(Device.fromMap(value, key.toString()));
+      value.forEach((key, val) {
+        if (val is Map) {
+          devices.add(Device.fromMap(val, key.toString()));
         }
       });
       devices.sort((a, b) => a.name.compareTo(b.name));
@@ -252,11 +250,10 @@ class FirebaseService {
     if (!snapshot.exists || snapshot.value == null) return <Device>[];
     final value = snapshot.value;
     if (value is! Map) return <Device>[];
-    final map = value as Map<dynamic, dynamic>;
     final devices = <Device>[];
-    map.forEach((key, value) {
-      if (value is Map) {
-        devices.add(Device.fromMap(value, key.toString()));
+    value.forEach((key, val) {
+      if (val is Map) {
+        devices.add(Device.fromMap(val, key.toString()));
       }
     });
     devices.sort((a, b) => a.name.compareTo(b.name));
@@ -274,7 +271,7 @@ class FirebaseService {
     try {
       await _db.goOnline();
       final user = FirebaseAuth.instance.currentUser;
-      await user?.getIdToken(refresh: true);
+      await user?.getIdToken(forceRefresh: true);
     } catch (e) {
       debugPrint('Firebase reconnect failed: $e');
     }
