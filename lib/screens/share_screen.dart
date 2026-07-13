@@ -9,18 +9,20 @@ import '../services/device_identity.dart';
 import '../services/firebase_service.dart';
 import '../services/location_service.dart';
 import '../utils/error_messages.dart';
+import '../utils/logger.dart';
 import '../utils/permissions.dart';
 import '../widgets/status_card.dart';
 
 /// Share screen — the user-facing control for live location sharing.
 ///
 /// Displays:
-///  - Device Name
-///  - Current GPS Status (enabled / disabled)
+///  - Device Name + Device ID
+///  - Current GPS Status (enabled / disabled) — with tap to open Settings
 ///  - Internet Status (online / offline)
 ///  - Sharing Status (active / stopped)
 ///  - Large ON/OFF switch
 ///  - Start Sharing button + Stop Sharing button
+///  - Last published coordinates (when sharing is active)
 class ShareScreen extends StatefulWidget {
   const ShareScreen({super.key});
 
@@ -28,7 +30,8 @@ class ShareScreen extends StatefulWidget {
   State<ShareScreen> createState() => _ShareScreenState();
 }
 
-class _ShareScreenState extends State<ShareScreen> {
+class _ShareScreenState extends State<ShareScreen>
+    with WidgetsBindingObserver {
   final LocationService _location = LocationService.instance;
   final BackgroundService _background = BackgroundService.instance;
   final DeviceIdentity _identity = DeviceIdentity.instance;
@@ -47,6 +50,7 @@ class _ShareScreenState extends State<ShareScreen> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _refreshStatuses();
     _connSub = Connectivity().onConnectivityChanged.listen((results) {
       final online = results.any((r) => r != ConnectivityResult.none);
@@ -58,21 +62,22 @@ class _ShareScreenState extends State<ShareScreen> {
     if (myId != null) {
       _locationSub = _firebase.watchLocation(myId).listen((loc) {
         if (mounted) setState(() => _lastPublished = loc);
+      }, onError: (Object error) {
+        // Expected when no location has been published yet.
+        AppLogger.info('ShareScreen: watchLocation error (expected if not sharing): $error');
       });
     }
-    // Refresh GPS/sharing status less aggressively (every 10s) — these only
-    // change when the user toggles system settings or stops sharing via the
-    // notification, which we also catch via didChangeAppLifecycleState.
+    // Refresh GPS/sharing status every 5s — catches changes from system
+    // settings or notification actions.
     _statusRefreshTimer =
-        Timer.periodic(const Duration(seconds: 10), (_) => _refreshStatuses());
+        Timer.periodic(const Duration(seconds: 5), (_) => _refreshStatuses());
   }
 
   @override
-  void didChangeDependencies() {
-    super.didChangeDependencies();
-    // Refresh when the screen becomes visible (e.g. after returning from
-    // system Settings where the user may have enabled GPS).
-    WidgetsBinding.instance.addPostFrameCallback((_) => _refreshStatuses());
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      _refreshStatuses();
+    }
   }
 
   Future<void> _refreshStatuses() async {
@@ -89,44 +94,56 @@ class _ShareScreenState extends State<ShareScreen> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _locationSub?.cancel();
     _connSub?.cancel();
     _statusRefreshTimer?.cancel();
     super.dispose();
   }
 
+  // ---------------------------------------------------------------------------
+  // Start / Stop sharing
+  // ---------------------------------------------------------------------------
   Future<void> _onStartSharing() async {
     if (_isBusy) return;
     setState(() => _isBusy = true);
 
     try {
-      // 1. Permissions
+      // 1. Check GPS — show exact reason
+      final gpsOn = await _location.isGpsEnabled();
+      if (!gpsOn) {
+        _showMessage(
+          'GPS is disabled. Enable location services in Settings to share your location.',
+          openSettings: true,
+        );
+        return;
+      }
+
+      // 2. Check internet — show exact reason
+      final netOn = await _location.hasInternet();
+      if (!netOn) {
+        _showMessage(
+          'No internet connection. Connect to Wi-Fi or mobile data to share your location.',
+        );
+        return;
+      }
+
+      // 3. Check authentication
+      if (_identity.deviceId == null || _identity.deviceName == null) {
+        _showMessage(
+          'Device not initialized. Restart the app.',
+        );
+        return;
+      }
+
+      // 4. Request permissions — show exact reason for denial
       final result = await AppPermissions.requestSharingPermissions();
       if (!result.granted) {
         _showMessage(result.message, openSettings: result.shouldOpenSettings);
         return;
       }
 
-      // 2. GPS check
-      final gpsOn = await _location.isGpsEnabled();
-      if (!gpsOn) {
-        _showMessage(
-          'GPS is disabled. Please enable location services in Settings.',
-          openSettings: true,
-        );
-        return;
-      }
-
-      // 3. Network check
-      final netOn = await _location.hasInternet();
-      if (!netOn) {
-        _showMessage(
-          'No internet connection. Please connect to Wi-Fi or mobile data.',
-        );
-        return;
-      }
-
-      // 4. Start the foreground service
+      // 5. Start the foreground service
       await _background.startSharing(
         deviceId: _identity.deviceId!,
         deviceName: _identity.deviceName!,
@@ -134,8 +151,9 @@ class _ShareScreenState extends State<ShareScreen> {
 
       if (!mounted) return;
       setState(() => _isSharing = true);
-      _showMessage('Live location sharing started.');
+      _showMessage('Live location sharing started.', isSuccess: true);
     } catch (e) {
+      AppLogger.error('Start sharing failed', e, StackTrace.current);
       _showMessage('Could not start sharing: ${ErrorMessages.forAny(e)}');
     } finally {
       if (mounted) setState(() => _isBusy = false);
@@ -146,33 +164,43 @@ class _ShareScreenState extends State<ShareScreen> {
     if (_isBusy) return;
     setState(() => _isBusy = true);
     try {
-      // stopSharing() invokes the 'stop-sharing' event in the background
-      // isolate, which calls markOffline() using the isolate's own auth
-      // (which is the UID that registered the device_id). We do NOT call
-      // markOffline from the main isolate because its UID may no longer
-      // match user_devices/{uid}/device_id (the background isolate
-      // overwrites that mapping when it starts).
       await _background.stopSharing(deviceId: _identity.deviceId!);
       if (!mounted) return;
       setState(() {
         _isSharing = false;
         _lastPublished = null;
       });
-      _showMessage('Live location sharing stopped.');
+      _showMessage('Live location sharing stopped.', isSuccess: true);
     } catch (e) {
+      AppLogger.error('Stop sharing failed', e, StackTrace.current);
       _showMessage('Could not stop sharing: ${ErrorMessages.forAny(e)}');
     } finally {
       if (mounted) setState(() => _isBusy = false);
     }
   }
 
-  void _showMessage(String message, {bool openSettings = false}) {
+  void _showMessage(String message,
+      {bool openSettings = false, bool isSuccess = false}) {
     if (!mounted) return;
     final messenger = ScaffoldMessenger.of(context);
     messenger.hideCurrentSnackBar();
     messenger.showSnackBar(
       SnackBar(
-        content: Text(message),
+        content: Row(
+          children: [
+            Icon(
+              isSuccess
+                  ? Icons.check_circle_outline_rounded
+                  : openSettings
+                      ? Icons.settings_rounded
+                      : Icons.info_outline_rounded,
+              color: Colors.white,
+              size: 20,
+            ),
+            const SizedBox(width: 12),
+            Expanded(child: Text(message)),
+          ],
+        ),
         duration: const Duration(seconds: 4),
         action: openSettings
             ? SnackBarAction(
@@ -184,6 +212,9 @@ class _ShareScreenState extends State<ShareScreen> {
     );
   }
 
+  // ---------------------------------------------------------------------------
+  // UI
+  // ---------------------------------------------------------------------------
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
@@ -261,7 +292,7 @@ class _ShareScreenState extends State<ShareScreen> {
                 statusColor: _gpsEnabled ? Colors.green : scheme.error,
                 subtitle: _gpsEnabled
                     ? 'High accuracy mode recommended'
-                    : 'Tap to open Settings',
+                    : 'Tap to open Location Settings',
                 onTap: _gpsEnabled
                     ? null
                     : () => AppPermissions.openAppSettingsPage(),

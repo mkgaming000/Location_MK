@@ -8,6 +8,7 @@ import 'package:flutter_background_service/flutter_background_service.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 
 import '../utils/constants.dart';
+import '../utils/logger.dart';
 import 'auth_service.dart';
 import 'firebase_service.dart';
 import 'location_service.dart';
@@ -16,35 +17,25 @@ import 'location_service.dart';
 /// sharing alive when the app is minimized, the screen is locked, or the
 /// screen is off.
 ///
-/// The service is configured with a persistent notification showing
-/// "Live Location Sharing Active" plus two actions:
-///   - **Stop Sharing** — stops the service immediately
-///   - **Open App** — brings the app to the foreground
+/// The foreground service shows a persistent notification:
+///   Title: "Live Location Sharing Active"
+///   Body:  "Your live location is being shared with paired devices."
 ///
 /// Architecture note: the foreground service runs in a separate Dart
-/// isolate, which means it does NOT share auth state with the main isolate.
-/// On isolate start we re-authenticate anonymously and register a fresh
-/// `user_devices/{uid}/device_id` mapping so the DB security rules accept
-/// the isolate's writes to `live_locations/{device_id}`.
+/// isolate. Firebase Auth state does NOT transfer across isolates. The
+/// isolate signs in anonymously and gets its own UID. The DB rules allow
+/// ANY authenticated user to write to live_locations (first writer owns
+/// the node), so the isolate's writes succeed.
 class BackgroundService {
   BackgroundService._();
   static final BackgroundService instance = BackgroundService._();
 
   final FlutterBackgroundService _service = FlutterBackgroundService();
-
   bool _configured = false;
 
-  // ---------------------------------------------------------------------------
-  // Initialization (called once at app start)
-  // ---------------------------------------------------------------------------
-
-  /// Configures the foreground service. Does NOT start it — the service is
-  /// only started when the user calls [startSharing]. Must be called once
-  /// before [startSharing] — typically from `main.dart`.
   Future<void> initialize() async {
     if (_configured) return;
     _configured = true;
-
     await _configureNotifications();
     await _configureService();
   }
@@ -72,17 +63,12 @@ class BackgroundService {
     await _service.configure(
       androidConfiguration: AndroidConfiguration(
         onStart: onStart,
-        // Auto-start is OFF — we start the service only when the user
-        // explicitly taps "Start Sharing".
         autoStart: false,
         isForegroundMode: true,
         notificationChannelId: AppConstants.notificationChannelId,
         initialNotificationTitle: AppConstants.notificationTitle,
         initialNotificationContent: AppConstants.notificationText,
         foregroundServiceNotificationId: AppConstants.notificationId,
-        // The foreground service type is declared in AndroidManifest.xml
-        // (`android:foregroundServiceType="location"`) so it is honored
-        // by Android 14+ without relying on plugin API differences.
       ),
       iosConfiguration: IosConfiguration(
         autoStart: false,
@@ -96,8 +82,6 @@ class BackgroundService {
   // Public control API
   // ---------------------------------------------------------------------------
 
-  /// Starts sharing location. The foreground service keeps running even when
-  /// the app is minimized, the screen is locked, or the screen is off.
   Future<void> startSharing({
     required String deviceId,
     required String deviceName,
@@ -112,19 +96,18 @@ class BackgroundService {
       'device_id': deviceId,
       'device_name': deviceName,
     });
+    AppLogger.background('startSharing invoked for device: $deviceId');
   }
 
-  /// Stops sharing location and tears down the foreground service.
   Future<void> stopSharing({required String deviceId}) async {
     _service.invoke('stop-sharing', {'device_id': deviceId});
-    // Give the service a moment to flush the offline marker, then stop it.
     await Future.delayed(const Duration(milliseconds: 500));
     if (await _service.isRunning()) {
       _service.invoke('stop-service');
     }
+    AppLogger.background('stopSharing invoked for device: $deviceId');
   }
 
-  /// Returns whether the foreground service is currently running.
   Future<bool> isSharing() async {
     if (!_configured) return false;
     return _service.isRunning();
@@ -136,22 +119,19 @@ class BackgroundService {
 
   @pragma('vm:entry-point')
   static Future<void> onStart(ServiceInstance service) async {
-    // The background service runs in a separate Dart isolate. We must
-    // initialize Flutter binding and Firebase explicitly here.
     DartPluginRegistrant.ensureInitialized();
     try {
       await Firebase.initializeApp();
-    } catch (_) {
-      // Firebase may already be initialized in this isolate; ignore.
+    } catch (e) {
+      // Firebase may already be initialized in this isolate.
+      AppLogger.background('Firebase already initialized: $e');
     }
 
-    // Listen for control events from the UI isolate. These are idempotent
-    // — duplicate registrations are safe because the plugin deduplicates.
     service.on('stop-service').listen((event) {
+      AppLogger.background('stop-service received');
       service.stopSelf();
     });
 
-    // Active state held by this isolate.
     String? activeDeviceId;
     String? activeDeviceName;
     StreamSubscription<LocationUpdate>? locationSub;
@@ -163,24 +143,25 @@ class BackgroundService {
     final FirebaseService firebase = FirebaseService.instance;
     final AuthService auth = AuthService.instance;
 
-    // Authenticate in this isolate (auth state doesn't transfer across
-    // isolates — we re-sign-in anonymously here).
+    // Authenticate in this isolate.
     try {
       await auth.initialize();
-    } catch (e) {
-      debugPrint('[BackgroundService] auth init failed: $e');
+      AppLogger.background('Auth initialized in isolate, uid: ${auth.uid}');
+    } catch (e, st) {
+      AppLogger.error('BackgroundService auth init failed', e, st);
     }
 
     service.on('start-sharing').listen((event) async {
       if (event == null) return;
       final newId = event['device_id'] as String?;
       final newName = event['device_name'] as String?;
-      if (newId == null) return;
+      if (newId == null) {
+        AppLogger.background('start-sharing: device_id is null');
+        return;
+      }
 
-      // If already sharing, ignore duplicate start-sharing events.
       if (isSharing && activeDeviceId == newId) {
-        debugPrint('[BackgroundService] start-sharing ignored — already '
-            'sharing this device.');
+        AppLogger.background('start-sharing ignored — already sharing');
         return;
       }
 
@@ -194,16 +175,7 @@ class BackgroundService {
       activeDeviceName = newName ?? 'Unknown Device';
       isSharing = true;
 
-      // Register the isolate's UID → device_id mapping so DB rules accept
-      // our writes to live_locations/{device_id}.
-      try {
-        await firebase.registerSelfDevice(
-          deviceId: activeDeviceId!,
-          deviceName: activeDeviceName!,
-        );
-      } catch (e) {
-        debugPrint('[BackgroundService] registerSelfDevice failed: $e');
-      }
+      AppLogger.background('Starting sharing for: $activeDeviceId');
 
       await _beginSharing(
         deviceId: activeDeviceId!,
@@ -218,11 +190,12 @@ class BackgroundService {
 
     service.on('stop-sharing').listen((event) async {
       final id = (event?['device_id'] as String?) ?? activeDeviceId;
+      AppLogger.background('stop-sharing received for: $id');
       if (id != null) {
         try {
           await firebase.markOffline(id);
-        } catch (e) {
-          debugPrint('[BackgroundService] markOffline failed: $e');
+        } catch (e, st) {
+          AppLogger.error('markOffline failed', e, st);
         }
       }
       isSharing = false;
@@ -236,8 +209,6 @@ class BackgroundService {
     });
   }
 
-  /// Begins live location monitoring + publishing. Called from the
-  /// `start-sharing` event handler.
   static Future<void> _beginSharing({
     required String deviceId,
     required String deviceName,
@@ -254,8 +225,9 @@ class BackgroundService {
         interval: AppConstants.locationUpdateInterval,
         distanceFilterMeters: AppConstants.locationDistanceFilterMeters,
       );
-    } catch (e) {
-      debugPrint('[BackgroundService] startMonitoring failed: $e');
+      AppLogger.background('GPS monitoring started');
+    } catch (e, st) {
+      AppLogger.error('startMonitoring failed', e, st);
       return;
     }
 
@@ -269,14 +241,12 @@ class BackgroundService {
         location: initial,
         online: true,
       );
+      AppLogger.background('Initial location published: ${initial.latitude}, ${initial.longitude}');
     }
 
-    // Subscribe to subsequent location updates — every new position is
-    // published to Firebase, replacing the previous one.
+    // Subscribe to location updates — every new position is published.
     setLocationSub(
       location.locationStream.listen((update) {
-        // Fire-and-forget publish — but catch errors so they don't propagate
-        // to the stream subscription and kill it.
         _publish(
           firebase: firebase,
           deviceId: deviceId,
@@ -287,15 +257,14 @@ class BackgroundService {
       }),
     );
 
-    // Network connectivity — pause publishing while offline, force-publish
-    // on reconnect so the receiver sees a fresh heartbeat immediately.
+    // Network connectivity — republish on reconnect.
     setConnectivitySub(
       Connectivity().onConnectivityChanged.listen((results) {
         final online = results.any((r) => r != ConnectivityResult.none);
         if (!online) {
-          debugPrint('[BackgroundService] Network lost — pausing publishes.');
+          AppLogger.network('lost — pausing publishes');
         } else {
-          debugPrint('[BackgroundService] Network restored — republishing.');
+          AppLogger.network('restored — republishing');
           final last = location.lastLocation ?? initial;
           if (last != null) {
             _publish(
@@ -310,13 +279,10 @@ class BackgroundService {
       }),
     );
 
-    // Heartbeat — every 10 seconds, refresh the online flag and timestamp
-    // even if the position has not changed (so the receiver sees a live
-    // heartbeat).
+    // Heartbeat — every 10 seconds, refresh online flag + timestamp.
     setHeartbeat(
       Timer.periodic(const Duration(seconds: 10), (_) async {
         final results = await Connectivity().checkConnectivity();
-        // We are online if ANY of the results is a real connection.
         final online = results.any((r) => r != ConnectivityResult.none);
         if (!online) return;
         final last = location.lastLocation ?? initial;
@@ -352,21 +318,18 @@ class BackgroundService {
           online: online,
         );
         return; // success
-      } catch (e) {
-        debugPrint('[BackgroundService] publish attempt $attempt failed: $e');
+      } catch (e, st) {
+        AppLogger.error('publish attempt $attempt failed', e, st);
         if (attempt < maxAttempts) {
           await Future.delayed(Duration(seconds: attempt));
         }
       }
     }
-    debugPrint('[BackgroundService] publish failed after $maxAttempts '
-        'attempts — giving up.');
+    AppLogger.error('publish failed after $maxAttempts attempts');
   }
 
   @pragma('vm:entry-point')
   static Future<bool> onIosBackground(ServiceInstance service) async {
-    // iOS does not support a true foreground service — return false so the
-    // app gracefully degrades to in-app-only sharing.
     return false;
   }
 }

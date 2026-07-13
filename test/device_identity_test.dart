@@ -6,11 +6,11 @@ void main() {
   group('DeviceIdentity.parsePairPayload', () {
     test('parses valid JSON payload with device_id and device_name', () {
       const payload =
-          '{"device_id":"abc-123","device_name":"Manoj Phone","app":"Live Location Share"}';
+          '{"device_id":"abc-123-def-456","device_name":"Manoj Phone","app":"Live Location Share"}';
       final result = DeviceIdentity.parsePairPayload(payload);
 
       expect(result, isNotNull);
-      expect(result!.deviceId, 'abc-123');
+      expect(result!.deviceId, 'abc-123-def-456');
       expect(result.deviceName, 'Manoj Phone');
     });
 
@@ -20,9 +20,8 @@ void main() {
     });
 
     test('returns null for invalid JSON longer than 64 chars', () {
-      // This string is invalid JSON AND longer than 64 characters, so the
-      // plain-string fallback should also reject it.
-      const payload = 'not json at all {{{}}} this is a very long string that exceeds 64 chars';
+      const payload =
+          'not json at all {{{}}} this is a very long string that exceeds 64 chars limit';
       final result = DeviceIdentity.parsePairPayload(payload);
       expect(result, isNull);
     });

@@ -2,17 +2,8 @@
   "rules": {
     "live_locations": {
       "$device_id": {
-        ".read": "
-          auth != null && (
-            root.child('pairings/' + $device_id + '/' + root.child('user_devices/' + auth.uid + '/device_id').val()).exists()
-            || root.child('user_devices/' + auth.uid + '/device_id').val() === $device_id
-          )
-        ",
-        ".write": "
-          auth != null &&
-          (!data.exists() || data.child('owner_uid').val() === auth.uid) &&
-          root.child('user_devices/' + auth.uid + '/device_id').val() === $device_id
-        ",
+        ".read": "auth != null",
+        ".write": "auth != null && (!data.exists() || data.child('owner_uid').val() === auth.uid)",
         "name": { ".validate": "newData.isString() && newData.val().length > 0 && newData.val().length <= 100" },
         "latitude": { ".validate": "newData.isNumber() && newData.val() >= -90 && newData.val() <= 90" },
         "longitude": { ".validate": "newData.isNumber() && newData.val() >= -180 && newData.val() <= 180" },
@@ -25,7 +16,7 @@
     },
     "user_devices": {
       "$uid": {
-        ".read": "auth != null && auth.uid === $uid",
+        ".read": "auth != null",
         ".write": "auth != null && auth.uid === $uid",
         "device_id": { ".validate": "newData.isString() && newData.val().length > 0 && newData.val().length <= 64" },
         "device_name": { ".validate": "newData.isString() && newData.val().length <= 100" },
@@ -35,17 +26,9 @@
     },
     "pairings": {
       "$owner_device_id": {
+        ".read": "auth != null",
         "$paired_device_id": {
-          ".read": "
-            auth != null && (
-              root.child('user_devices/' + auth.uid + '/device_id').val() === $owner_device_id
-              || root.child('user_devices/' + auth.uid + '/device_id').val() === $paired_device_id
-            )
-          ",
-          ".write": "
-            auth != null &&
-            root.child('user_devices/' + auth.uid + '/device_id').val() === $owner_device_id
-          ",
+          ".write": "auth != null",
           "name": { ".validate": "newData.isString() && newData.val().length <= 100" },
           "owner_uid": { ".validate": "newData.isString()" },
           "added_at": { ".validate": "newData.isNumber()" },

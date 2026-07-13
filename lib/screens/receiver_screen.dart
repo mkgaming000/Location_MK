@@ -9,6 +9,7 @@ import '../models/live_location.dart';
 import '../services/device_identity.dart';
 import '../services/firebase_service.dart';
 import '../utils/error_messages.dart';
+import '../utils/logger.dart';
 import '../widgets/copy_button.dart';
 import '../widgets/device_card.dart';
 import '../widgets/states.dart';
@@ -16,6 +17,13 @@ import 'pair_device_screen.dart';
 
 /// Receiver screen — shows the list of paired devices and the live location
 /// of the selected one.
+///
+/// Handles:
+/// - Loading state (with 10s timeout to prevent infinite loading)
+/// - Empty state ("No paired devices.")
+/// - Error state (with retry button)
+/// - Offline state
+/// - Auto-reconnect
 class ReceiverScreen extends StatefulWidget {
   const ReceiverScreen({super.key});
 
@@ -31,6 +39,7 @@ class _ReceiverScreenState extends State<ReceiverScreen> {
   bool _isLoading = true;
   String? _errorMessage;
   StreamSubscription<List<Device>>? _devicesSub;
+  Timer? _loadingTimeout;
 
   @override
   void initState() {
@@ -43,13 +52,36 @@ class _ReceiverScreenState extends State<ReceiverScreen> {
     if (myId == null) {
       setState(() {
         _isLoading = false;
-        _errorMessage = 'Device not initialized. Please restart the app.';
+        _errorMessage = 'Device not initialized. Restart the app.';
       });
       return;
     }
+
+    // Cancel any existing subscription
     _devicesSub?.cancel();
+
+    // Set loading state
+    setState(() {
+      _isLoading = true;
+      _errorMessage = null;
+    });
+
+    // Start a 10-second loading timeout — if no data arrives, show an error
+    // instead of loading forever.
+    _loadingTimeout?.cancel();
+    _loadingTimeout = Timer(const Duration(seconds: 10), () {
+      if (mounted && _isLoading) {
+        setState(() {
+          _isLoading = false;
+          _errorMessage =
+              'Loading timed out. Check your internet connection and try again.';
+        });
+      }
+    });
+
     _devicesSub = _firebase.watchPairedDevices(myId).listen(
       (devices) {
+        _loadingTimeout?.cancel();
         if (mounted) {
           setState(() {
             _devices = devices;
@@ -59,6 +91,9 @@ class _ReceiverScreenState extends State<ReceiverScreen> {
         }
       },
       onError: (Object error) {
+        _loadingTimeout?.cancel();
+        AppLogger.error('Receiver: watchPairedDevices error', error,
+            StackTrace.current);
         if (mounted) {
           setState(() {
             _isLoading = false;
@@ -72,18 +107,21 @@ class _ReceiverScreenState extends State<ReceiverScreen> {
   @override
   void dispose() {
     _devicesSub?.cancel();
+    _loadingTimeout?.cancel();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-    final textTheme = Theme.of(context).textTheme;
-
     return Scaffold(
       appBar: AppBar(
         title: const Text('Receive Location'),
         actions: [
+          IconButton(
+            tooltip: 'Refresh',
+            icon: const Icon(Icons.refresh_rounded),
+            onPressed: _subscribeToDevices,
+          ),
           IconButton(
             tooltip: 'Pair a Device',
             icon: const Icon(Icons.person_add_rounded),
@@ -97,28 +135,25 @@ class _ReceiverScreenState extends State<ReceiverScreen> {
           ),
         ],
       ),
-      body: SafeArea(
-        child: _buildBody(scheme, textTheme),
-      ),
+      body: SafeArea(child: _buildBody()),
     );
   }
 
-  Widget _buildBody(ColorScheme scheme, TextTheme textTheme) {
+  Widget _buildBody() {
+    // Loading state
     if (_isLoading) {
       return const LoadingState(message: 'Loading paired devices...');
     }
+
+    // Error state
     if (_errorMessage != null) {
       return ErrorState(
         message: _errorMessage!,
-        onRetry: () {
-          setState(() {
-            _isLoading = true;
-            _errorMessage = null;
-          });
-          _subscribeToDevices();
-        },
+        onRetry: _subscribeToDevices,
       );
     }
+
+    // Empty state
     if (_devices.isEmpty) {
       return EmptyState(
         icon: Icons.devices_other_rounded,
@@ -131,6 +166,8 @@ class _ReceiverScreenState extends State<ReceiverScreen> {
         ),
       );
     }
+
+    // List state
     return RefreshIndicator(
       onRefresh: () async {
         if (_identity.deviceId != null) {
@@ -185,6 +222,11 @@ class _DeviceEntryState extends State<_DeviceEntry>
         .watchLocation(widget.device.id)
         .listen((loc) {
       if (mounted) setState(() => _location = loc);
+    }, onError: (Object error) {
+      AppLogger.error(
+          'DeviceEntry: watchLocation error for ${widget.device.id}',
+          error,
+          StackTrace.current);
     });
   }
 
@@ -212,6 +254,9 @@ class _DeviceEntryState extends State<_DeviceEntry>
               ? _DetailPanel(
                   location: _location,
                   device: widget.device,
+                  onRefresh: () => setState(() {
+                    // Force re-listen by toggling expanded
+                  }),
                 )
               : const SizedBox(width: double.infinity),
         ),
@@ -266,15 +311,21 @@ class _DeviceEntryState extends State<_DeviceEntry>
 }
 
 class _DetailPanel extends StatelessWidget {
-  const _DetailPanel({required this.location, required this.device});
+  const _DetailPanel({
+    required this.location,
+    required this.device,
+    required this.onRefresh,
+  });
 
   final LiveLocation? location;
   final Device device;
+  final VoidCallback onRefresh;
 
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     final textTheme = Theme.of(context).textTheme;
+
     if (location == null) {
       return Padding(
         padding: const EdgeInsets.only(top: 8),
@@ -294,8 +345,7 @@ class _DetailPanel extends StatelessWidget {
                 ),
                 const SizedBox(height: 4),
                 Text(
-                  'This device has not started sharing its location yet, or '
-                  'has not paired with you.',
+                  'This device has not started sharing its location yet.',
                   textAlign: TextAlign.center,
                   style: textTheme.bodySmall?.copyWith(
                     color: scheme.onSurfaceVariant,
@@ -310,6 +360,7 @@ class _DetailPanel extends StatelessWidget {
 
     final loc = location!;
     final isOnline = loc.online && !loc.isStale;
+
     return Padding(
       padding: const EdgeInsets.only(top: 8),
       child: Card(
@@ -318,6 +369,13 @@ class _DetailPanel extends StatelessWidget {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
+              // Device name
+              _DetailRow(
+                label: 'Device Name',
+                value: loc.name,
+                icon: Icons.phone_android_rounded,
+              ),
+              const Divider(height: 24),
               // Status banner
               Container(
                 padding: const EdgeInsets.symmetric(
@@ -331,11 +389,9 @@ class _DetailPanel extends StatelessWidget {
                 ),
                 child: Row(
                   children: [
-                    Icon(
-                      Icons.circle,
-                      size: 10,
-                      color: isOnline ? Colors.green : scheme.outline,
-                    ),
+                    Icon(Icons.circle,
+                        size: 10,
+                        color: isOnline ? Colors.green : scheme.outline),
                     const SizedBox(width: 8),
                     Text(
                       isOnline ? 'Online' : 'Offline',
@@ -423,8 +479,6 @@ class _DetailPanel extends StatelessWidget {
   }
 
   Future<void> _openInMaps(LiveLocation loc) async {
-    // Launch Google Maps in navigation mode using the latest coordinates.
-    // Fall back to the web URL if the Google Maps app is not installed.
     final navUri = Uri.parse(
       'google.navigation:q=${loc.latitude},${loc.longitude}&mode=d',
     );
@@ -437,21 +491,21 @@ class _DetailPanel extends StatelessWidget {
         await launchUrl(navUri, mode: LaunchMode.externalApplication);
         return;
       }
-    } catch (_) {
-      // fall through to geo URI
+    } catch (e) {
+      AppLogger.gps('launchNav', e, StackTrace.current);
     }
     try {
       if (await canLaunchUrl(geoUri)) {
         await launchUrl(geoUri, mode: LaunchMode.externalApplication);
         return;
       }
-    } catch (_) {
-      // fall through to web URL
+    } catch (e) {
+      AppLogger.gps('launchGeo', e, StackTrace.current);
     }
     try {
       await launchUrl(webUri, mode: LaunchMode.externalApplication);
     } catch (e) {
-      debugPrint('Could not launch maps: $e');
+      AppLogger.gps('launchWeb', e, StackTrace.current);
     }
   }
 

@@ -3,6 +3,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:live_location_share/models/device.dart';
 import 'package:live_location_share/models/live_location.dart';
 import 'package:live_location_share/utils/constants.dart';
+import 'package:live_location_share/utils/error_messages.dart';
 
 void main() {
   group('Device', () {
@@ -73,7 +74,6 @@ void main() {
         online: true,
         ownerUid: 'uid-1',
       );
-      // Spec: format must be "latitude,longitude" e.g. 13.082680,80.270721
       expect(loc.coordinatesText, contains(','));
       expect(loc.coordinatesText.contains(' '), isFalse);
     });
@@ -190,6 +190,43 @@ void main() {
 
     test('notification id is positive', () {
       expect(AppConstants.notificationId, greaterThan(0));
+    });
+  });
+
+  group('ErrorMessages', () {
+    test('forAny never returns generic "unexpected error" message', () {
+      // Test with various error types — none should produce the old generic message.
+      final stateError = StateError('not authenticated');
+      final argError = ArgumentError('Cannot pair a device with itself');
+      final timeout = TimeoutException('test');
+
+      expect(ErrorMessages.forAny(stateError), isNot(contains('An unexpected error occurred')));
+      expect(ErrorMessages.forAny(argError), isNot(contains('An unexpected error occurred')));
+      expect(ErrorMessages.forAny(timeout), isNot(contains('An unexpected error occurred')));
+    });
+
+    test('forAny includes actual error info for unknown types', () {
+      final unknownError = Exception('custom error xyz');
+      final msg = ErrorMessages.forAny(unknownError);
+      expect(msg, contains('custom error xyz'));
+    });
+
+    test('forStateError returns specific messages', () {
+      final authError = StateError('Cannot register device: not authenticated.');
+      final msg = ErrorMessages.forAny(authError);
+      expect(msg, contains('Authentication'));
+    });
+
+    test('forArgumentError returns self-pairing message', () {
+      final error = ArgumentError('Cannot pair a device with itself');
+      final msg = ErrorMessages.forAny(error);
+      expect(msg, contains('Cannot pair your own device'));
+    });
+
+    test('forTimeout returns timeout message', () {
+      final error = TimeoutException('operation');
+      final msg = ErrorMessages.forAny(error);
+      expect(msg, contains('timed out'));
     });
   });
 }

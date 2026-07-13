@@ -3,9 +3,11 @@ import 'package:flutter/services.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 
+import '../services/auth_service.dart';
 import '../services/device_identity.dart';
 import '../services/firebase_service.dart';
 import '../utils/error_messages.dart';
+import '../utils/logger.dart';
 
 /// Pair Device screen — lets the user pair another phone either by:
 ///   - Showing their QR code / Device ID for the other phone to scan
@@ -63,179 +65,198 @@ class _PairDeviceScreenState extends State<PairDeviceScreen>
       body: TabBarView(
         controller: _tabController,
         children: [
-          // ---------- Tab 1: My Code ----------
-          SingleChildScrollView(
-            padding: const EdgeInsets.all(20),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                Text(
-                  'Share this code with the person you want to pair with.',
-                  textAlign: TextAlign.center,
-                  style: textTheme.bodyMedium?.copyWith(
-                    color: scheme.onSurfaceVariant,
-                    height: 1.5,
-                  ),
-                ),
-                const SizedBox(height: 24),
-                Center(
-                  child: Container(
-                    padding: const EdgeInsets.all(20),
-                    decoration: BoxDecoration(
-                      color: Colors.white,
-                      borderRadius: BorderRadius.circular(24),
-                      boxShadow: [
-                        BoxShadow(
-                          color: scheme.shadow.withValues(alpha: 0.1),
-                          blurRadius: 24,
-                          offset: const Offset(0, 8),
-                        ),
-                      ],
-                    ),
-                    child: QrImageView(
-                      data: myPairPayload,
-                      version: QrVersions.auto,
-                      size: 240,
-                      backgroundColor: Colors.white,
-                      eyeStyle: const QrEyeStyle(
-                        eyeShape: QrEyeShape.circle,
-                        color: Colors.black,
-                      ),
-                      dataModuleStyle: const QrDataModuleStyle(
-                        dataModuleShape: QrDataModuleShape.circle,
-                        color: Colors.black,
-                      ),
-                    ),
-                  ),
-                ),
-                const SizedBox(height: 24),
-                _DeviceIdBox(
-                  label: 'My Device Name',
-                  value: identity.deviceName ?? '',
-                ),
-                const SizedBox(height: 12),
-                _DeviceIdBox(
-                  label: 'My Device ID',
-                  value: identity.deviceId ?? '',
-                  copyable: true,
-                ),
-                const SizedBox(height: 20),
-                OutlinedButton.icon(
-                  onPressed: () async {
-                    await Clipboard.setData(
-                      ClipboardData(text: identity.deviceId ?? ''),
-                    );
-                    if (!mounted) return;
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(
-                        content: Text('Device ID copied to clipboard.'),
-                      ),
-                    );
-                  },
-                  icon: const Icon(Icons.copy_rounded),
-                  label: const Text('Copy Device ID'),
-                ),
-              ],
+          _buildMyCodeTab(scheme, textTheme, identity, myPairPayload),
+          _buildAddDeviceTab(scheme, textTheme),
+        ],
+      ),
+    );
+  }
+
+  // ---------------------------------------------------------------------------
+  // Tab 1: My Code
+  // ---------------------------------------------------------------------------
+  Widget _buildMyCodeTab(
+    ColorScheme scheme,
+    TextTheme textTheme,
+    DeviceIdentity identity,
+    String myPairPayload,
+  ) {
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(20),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Text(
+            'Share this code with the person you want to pair with.',
+            textAlign: TextAlign.center,
+            style: textTheme.bodyMedium?.copyWith(
+              color: scheme.onSurfaceVariant,
+              height: 1.5,
             ),
           ),
-
-          // ---------- Tab 2: Add Device ----------
-          SingleChildScrollView(
-            padding: const EdgeInsets.all(20),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                Text(
-                  'Enter the Device ID of the phone you want to pair with, or scan its QR code.',
-                  style: textTheme.bodyMedium?.copyWith(
-                    color: scheme.onSurfaceVariant,
-                    height: 1.5,
-                  ),
-                ),
-                const SizedBox(height: 20),
-                TextField(
-                  controller: _deviceNameCtrl,
-                  decoration: const InputDecoration(
-                    labelText: 'Device Name (optional)',
-                    hintText: 'e.g. Manoj Phone',
-                    prefixIcon: Icon(Icons.label_outline_rounded),
-                  ),
-                ),
-                const SizedBox(height: 12),
-                TextField(
-                  controller: _deviceIdCtrl,
-                  decoration: const InputDecoration(
-                    labelText: 'Device ID',
-                    hintText: 'Paste the Device ID here',
-                    prefixIcon: Icon(Icons.fingerprint_rounded),
-                  ),
-                  style: const TextStyle(fontFamily: 'monospace'),
-                ),
-                const SizedBox(height: 16),
-                FilledButton.icon(
-                  onPressed: _isPairing ? null : _pairByManualEntry,
-                  icon: _isPairing
-                      ? const SizedBox(
-                          width: 20,
-                          height: 20,
-                          child: CircularProgressIndicator(
-                            strokeWidth: 2,
-                            color: Colors.white,
-                          ),
-                        )
-                      : const Icon(Icons.link_rounded),
-                  label: const Text('Pair Device'),
-                ),
-                const SizedBox(height: 20),
-                const Row(
-                  children: [
-                    Expanded(child: Divider()),
-                    Padding(
-                      padding: EdgeInsets.symmetric(horizontal: 12),
-                      child: Text('OR'),
-                    ),
-                    Expanded(child: Divider()),
-                  ],
-                ),
-                const SizedBox(height: 20),
-                OutlinedButton.icon(
-                  onPressed: _toggleScanner,
-                  icon: Icon(_scannerActive
-                      ? Icons.stop_circle_rounded
-                      : Icons.qr_code_scanner_rounded),
-                  label: Text(
-                    _scannerActive ? 'Stop Scanner' : 'Scan QR Code',
-                  ),
-                ),
-                if (_scannerActive) ...[
-                  const SizedBox(height: 16),
-                  ClipRRect(
-                    borderRadius: BorderRadius.circular(20),
-                    child: AspectRatio(
-                      aspectRatio: 1,
-                      child: MobileScanner(
-                        controller: _scannerCtrl,
-                        onDetect: _onScanDetect,
-                      ),
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                  Text(
-                    'Point the camera at the other phone\'s QR code.',
-                    textAlign: TextAlign.center,
-                    style: textTheme.bodySmall?.copyWith(
-                      color: scheme.onSurfaceVariant,
-                    ),
+          const SizedBox(height: 24),
+          Center(
+            child: Container(
+              padding: const EdgeInsets.all(20),
+              decoration: BoxDecoration(
+                color: Colors.white,
+                borderRadius: BorderRadius.circular(24),
+                boxShadow: [
+                  BoxShadow(
+                    color: scheme.shadow.withValues(alpha: 0.1),
+                    blurRadius: 24,
+                    offset: const Offset(0, 8),
                   ),
                 ],
-              ],
+              ),
+              child: QrImageView(
+                data: myPairPayload,
+                version: QrVersions.auto,
+                size: 240,
+                backgroundColor: Colors.white,
+                eyeStyle: const QrEyeStyle(
+                  eyeShape: QrEyeShape.circle,
+                  color: Colors.black,
+                ),
+                dataModuleStyle: const QrDataModuleStyle(
+                  dataModuleShape: QrDataModuleShape.circle,
+                  color: Colors.black,
+                ),
+              ),
             ),
+          ),
+          const SizedBox(height: 24),
+          _DeviceIdBox(
+            label: 'My Device Name',
+            value: identity.deviceName ?? '',
+          ),
+          const SizedBox(height: 12),
+          _DeviceIdBox(
+            label: 'My Device ID',
+            value: identity.deviceId ?? '',
+            copyable: true,
+          ),
+          const SizedBox(height: 20),
+          OutlinedButton.icon(
+            onPressed: () async {
+              await Clipboard.setData(
+                ClipboardData(text: identity.deviceId ?? ''),
+              );
+              if (!mounted) return;
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(
+                  content: Text('Device ID copied to clipboard.'),
+                ),
+              );
+            },
+            icon: const Icon(Icons.copy_rounded),
+            label: const Text('Copy Device ID'),
           ),
         ],
       ),
     );
   }
 
+  // ---------------------------------------------------------------------------
+  // Tab 2: Add Device
+  // ---------------------------------------------------------------------------
+  Widget _buildAddDeviceTab(ColorScheme scheme, TextTheme textTheme) {
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(20),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Text(
+            'Enter the Device ID of the phone you want to pair with, or scan its QR code.',
+            style: textTheme.bodyMedium?.copyWith(
+              color: scheme.onSurfaceVariant,
+              height: 1.5,
+            ),
+          ),
+          const SizedBox(height: 20),
+          TextField(
+            controller: _deviceNameCtrl,
+            decoration: const InputDecoration(
+              labelText: 'Device Name (optional)',
+              hintText: 'e.g. Manoj Phone',
+              prefixIcon: Icon(Icons.label_outline_rounded),
+            ),
+          ),
+          const SizedBox(height: 12),
+          TextField(
+            controller: _deviceIdCtrl,
+            decoration: const InputDecoration(
+              labelText: 'Device ID',
+              hintText: 'Paste the Device ID here',
+              prefixIcon: Icon(Icons.fingerprint_rounded),
+            ),
+            style: const TextStyle(fontFamily: 'monospace'),
+          ),
+          const SizedBox(height: 16),
+          FilledButton.icon(
+            onPressed: _isPairing ? null : _pairByManualEntry,
+            icon: _isPairing
+                ? const SizedBox(
+                    width: 20,
+                    height: 20,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      color: Colors.white,
+                    ),
+                  )
+                : const Icon(Icons.link_rounded),
+            label: const Text('Pair Device'),
+          ),
+          const SizedBox(height: 20),
+          const Row(
+            children: [
+              Expanded(child: Divider()),
+              Padding(
+                padding: EdgeInsets.symmetric(horizontal: 12),
+                child: Text('OR'),
+              ),
+              Expanded(child: Divider()),
+            ],
+          ),
+          const SizedBox(height: 20),
+          OutlinedButton.icon(
+            onPressed: _toggleScanner,
+            icon: Icon(_scannerActive
+                ? Icons.stop_circle_rounded
+                : Icons.qr_code_scanner_rounded),
+            label: Text(
+              _scannerActive ? 'Stop Scanner' : 'Scan QR Code',
+            ),
+          ),
+          if (_scannerActive) ...[
+            const SizedBox(height: 16),
+            ClipRRect(
+              borderRadius: BorderRadius.circular(20),
+              child: AspectRatio(
+                aspectRatio: 1,
+                child: MobileScanner(
+                  controller: _scannerCtrl,
+                  onDetect: _onScanDetect,
+                ),
+              ),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              'Point the camera at the other phone\'s QR code.',
+              textAlign: TextAlign.center,
+              style: textTheme.bodySmall?.copyWith(
+                color: scheme.onSurfaceVariant,
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  // ---------------------------------------------------------------------------
+  // Scanner
+  // ---------------------------------------------------------------------------
   void _toggleScanner() {
     setState(() {
       _scannerActive = !_scannerActive;
@@ -249,7 +270,6 @@ class _PairDeviceScreenState extends State<PairDeviceScreen>
   }
 
   Future<void> _onScanDetect(BarcodeCapture capture) async {
-    // Debounce — multiple frames can fire onDetect before we stop the scanner.
     if (_scanProcessed) return;
     final barcodes = capture.barcodes;
     if (barcodes.isEmpty) return;
@@ -261,7 +281,10 @@ class _PairDeviceScreenState extends State<PairDeviceScreen>
     setState(() => _scannerActive = false);
     final parsed = DeviceIdentity.parsePairPayload(raw);
     if (parsed == null) {
-      _showMessage('Invalid QR code. Please scan a Live Location Share code.');
+      _showMessage(
+        'Invalid QR code. Please scan a Live Location Share QR code.',
+        isError: true,
+      );
       _scanProcessed = false;
       return;
     }
@@ -273,46 +296,136 @@ class _PairDeviceScreenState extends State<PairDeviceScreen>
     _scanProcessed = false;
   }
 
+  // ---------------------------------------------------------------------------
+  // Pairing logic — with specific error messages
+  // ---------------------------------------------------------------------------
   Future<void> _pairByManualEntry() async {
     final id = _deviceIdCtrl.text.trim();
+
+    // 1. Validate Device ID is not empty
     if (id.isEmpty) {
-      _showMessage('Please enter a Device ID.');
+      _showMessage('Please enter a Device ID.', isError: true);
       return;
     }
+
+    // 2. Validate Device ID format (UUID v4 or similar, 8-64 chars)
+    if (id.length < 8 || id.length > 64) {
+      _showMessage(
+        'Invalid device ID. It should be 8-64 characters. '
+        'Please check and try again.',
+        isError: true,
+      );
+      return;
+    }
+
     final myId = DeviceIdentity.instance.deviceId;
     if (myId == null) {
-      _showMessage('Your device is not yet initialized. Please restart the app.');
+      _showMessage(
+        'Your device is not initialized. Restart the app.',
+        isError: true,
+      );
       return;
     }
+
+    // 3. Prevent self-pairing
     if (id == myId) {
-      _showMessage('You cannot pair your own device.');
+      _showMessage(
+        'Cannot pair your own device. Enter the Device ID of a DIFFERENT phone.',
+        isError: true,
+      );
       return;
     }
+
+    // 4. Check authentication
+    if (AuthService.instance.uid == null) {
+      _showMessage(
+        'Authentication failed. Restart the app to sign in.',
+        isError: true,
+      );
+      return;
+    }
+
     setState(() => _isPairing = true);
+
     try {
+      // 5. Check for duplicate pairing
+      final alreadyPaired =
+          await FirebaseService.instance.isAlreadyPaired(myId, id);
+      if (alreadyPaired) {
+        _showMessage(
+          'Already paired. This device is already in your paired list.',
+          isError: true,
+        );
+        return;
+      }
+
+      // 6. Attempt to pair
       final name = _deviceNameCtrl.text.trim().isEmpty
           ? 'Paired Device'
           : _deviceNameCtrl.text.trim();
-      await FirebaseService.instance.addPairedDevice(
+
+      final device = await FirebaseService.instance.addPairedDevice(
         myDeviceId: myId,
         theirDeviceId: id,
         theirDeviceName: name,
       );
+
       if (!mounted) return;
-      _showMessage('Device "$name" paired successfully.');
+      _showMessage(
+        'Paired successfully with "${device.name}".',
+        isSuccess: true,
+      );
       _deviceIdCtrl.clear();
       _deviceNameCtrl.clear();
+    } on StateError catch (e) {
+      // Specific state errors from FirebaseService
+      final msg = e.message;
+      if (msg.contains('Already paired')) {
+        _showMessage('Already paired. This device is in your paired list.',
+            isError: true);
+      } else if (msg.contains('Authentication')) {
+        _showMessage('Authentication failed. Restart the app.', isError: true);
+      } else {
+        _showMessage(msg, isError: true);
+      }
     } catch (e) {
-      _showMessage('Could not pair device: ${ErrorMessages.forAny(e)}');
+      AppLogger.error('Pairing failed', e, StackTrace.current);
+      _showMessage(
+        ErrorMessages.forAny(e),
+        isError: true,
+      );
     } finally {
       if (mounted) setState(() => _isPairing = false);
     }
   }
 
-  void _showMessage(String message) {
+  void _showMessage(String message,
+      {bool isError = false, bool isSuccess = false}) {
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(message)),
+      SnackBar(
+        content: Row(
+          children: [
+            Icon(
+              isError
+                  ? Icons.error_outline_rounded
+                  : isSuccess
+                      ? Icons.check_circle_outline_rounded
+                      : Icons.info_outline_rounded,
+              color: Colors.white,
+              size: 20,
+            ),
+            const SizedBox(width: 12),
+            Expanded(child: Text(message)),
+          ],
+        ),
+        backgroundColor: isError
+            ? Theme.of(context).colorScheme.error
+            : isSuccess
+                ? Colors.green
+                : null,
+        duration: const Duration(seconds: 4),
+      ),
     );
   }
 }
