@@ -4,15 +4,6 @@ import 'package:flutter/foundation.dart';
 
 /// Centralized logging service that captures stack traces and categorizes
 /// errors by severity. All logs are visible in `flutter logs` and Logcat.
-///
-/// Usage:
-///   AppLogger.info('message');
-///   AppLogger.warning('message');
-///   AppLogger.error('message', error, stackTrace);
-///   AppLogger.firebase('operation', error);
-///   AppLogger.gps('operation', error);
-///   AppLogger.permission('permission', granted);
-///   AppLogger.network('online');
 class AppLogger {
   AppLogger._();
 
@@ -24,34 +15,33 @@ class AppLogger {
     debugPrint('[WARN] $message');
   }
 
-  static void error(String message, [Object? error, StackTrace? stackTrace]) {
+  static void error(String message, [Object? errorObj, StackTrace? stackTrace]) {
     debugPrint('[ERROR] $message');
-    if (error != null) {
-      debugPrint('  Error: $error');
+    if (errorObj != null) {
+      debugPrint('  Error: $errorObj');
     }
     if (stackTrace != null) {
       debugPrint('  StackTrace: $stackTrace');
     }
-    // Also log to developer for capture in observatory
     developer.log(
       message,
-      error: error,
+      error: errorObj,
       stackTrace: stackTrace,
       name: 'LocationMK',
     );
   }
 
-  static void firebase(String operation, [Object? error, StackTrace? stackTrace]) {
-    if (error != null) {
-      error_('Firebase[$operation] failed: $error', error, stackTrace);
+  static void firebase(String operation, [Object? errorObj, StackTrace? stackTrace]) {
+    if (errorObj != null) {
+      error('Firebase[$operation] failed: $errorObj', errorObj, stackTrace);
     } else {
       info('Firebase[$operation] success.');
     }
   }
 
-  static void gps(String operation, [Object? error, StackTrace? stackTrace]) {
-    if (error != null) {
-      error_('GPS[$operation] failed: $error', error, stackTrace);
+  static void gps(String operation, [Object? errorObj, StackTrace? stackTrace]) {
+    if (errorObj != null) {
+      error('GPS[$operation] failed: $errorObj', errorObj, stackTrace);
     } else {
       info('GPS[$operation] success.');
     }
@@ -67,10 +57,5 @@ class AppLogger {
 
   static void background(String message) {
     info('[BackgroundService] $message');
-  }
-
-  /// Internal helper to avoid name clash with the public [error] method.
-  static void error_(String message, Object? error, StackTrace? stackTrace) {
-    error(message, error, stackTrace);
   }
 }
