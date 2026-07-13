@@ -19,8 +19,10 @@ void main() {
       expect(result, isNull);
     });
 
-    test('returns null for invalid JSON', () {
-      const payload = 'not json at all {{{}}';
+    test('returns null for invalid JSON longer than 64 chars', () {
+      // This string is invalid JSON AND longer than 64 characters, so the
+      // plain-string fallback should also reject it.
+      const payload = 'not json at all {{{}}} this is a very long string that exceeds 64 chars';
       final result = DeviceIdentity.parsePairPayload(payload);
       expect(result, isNull);
     });
